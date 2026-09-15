@@ -1,0 +1,1155 @@
+import QtQuick
+import QtQuick.Controls
+import Quickshell
+import Quickshell.Io
+import qs.Ui
+import qs.Commons
+import "Model.js" as Model
+
+Panel {
+  id: root
+  moduleName: "rohirik.docker-monitor"
+  ipcTarget: "rohirik.docker-monitor"
+
+  property bool dockerAvailable: false
+  property string dockerVersion: ""
+  property double hostMemBytes: 0
+  property var containers: []
+
+  property var preferences: ({ assignments: {}, aliases: {}, urls: {} })
+  property var history: ({})
+  property string notice: ""
+  property bool noticeError: false
+  property var editRow: null
+  property string logsName: ""
+  property string logsId: ""
+  property string logsText: ""
+  property bool savingPreferences: false
+
+  // Match service identity as well as the display name, so aliases keep their icon.
+  function serviceIcon(row) {
+    var members = row.containers || [row]
+    var identity = [row.key || "", row.name || ""].concat(members.map(function(c) {
+      return [c.project || "", c.service || "", c.image || ""].join(" ")
+    })).join(" ").toLowerCase()
+    var icons = [
+      { pattern: /beszel|prometheus|grafana|netdata|uptime-kuma/, glyph: "\uf201" },
+      { pattern: /infisical|vault|authentik|keycloak|authelia/, glyph: "\uf023" },
+      { pattern: /traefik|nginx|caddy|haproxy/, glyph: "\uf0e8" },
+      { pattern: /n8n|node-red|activepieces/, glyph: "\uf0e7" },
+      { pattern: /postgres|mysql|mariadb|mongo|redis|valkey/, glyph: "\uf1c0" }
+    ]
+    for (var i = 0; i < icons.length; i++) {
+      if (icons[i].pattern.test(identity)) return icons[i].glyph
+    }
+    return "\uf308"
+  }
+
+  property var hostStats: ({})
+
+  Process {
+    id: hostStatsProc
+    command: ["python3", Qt.resolvedUrl("host-stats.py").toString().replace("file://", "")]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try { root.hostStats = JSON.parse(text) }
+        catch (e) { root.hostStats = {} }
+      }
+    }
+  }
+
+  Timer {
+    interval: root.refreshMs
+    running: root.opened
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!hostStatsProc.running) hostStatsProc.running = true
+  }
+
+  function urlsFor(row) {
+    return row.isGroup ? row.urls : Model.containerUrls(row, preferences)
+  }
+
+  function openEditor(row) {
+    editRow = row
+    groupField.text = row.isGroup ? row.name : ((preferences.assignments || {})[row.name] || "")
+    urlField.text = row.isGroup ? "" : ((preferences.urls || {})[row.name] || "")
+    keyCatcher.forceActiveFocus()
+    scrollArea.contentItem.contentY = 0
+  }
+
+  function saveEditor() {
+    var url = urlField.text.trim()
+    if (!editRow.isGroup && url && !Model.safeUrl(url)) {
+      notice = "Enter a full http:// or https:// address."
+      noticeError = true
+      return
+    }
+    var next = JSON.parse(JSON.stringify(preferences))
+    next.assignments = next.assignments || {}
+    next.aliases = next.aliases || {}
+    next.urls = next.urls || {}
+    var name = groupField.text.trim()
+    if (editRow.isGroup) {
+      if (name) next.aliases[editRow.key] = name
+      else delete next.aliases[editRow.key]
+    } else {
+      if (name) next.assignments[editRow.name] = name
+      else delete next.assignments[editRow.name]
+      if (url) next.urls[editRow.name] = url
+      else delete next.urls[editRow.name]
+    }
+    preferences = next
+    var serialized = JSON.stringify(next, null, 2) + "\n"
+    if (preferencesFile.text() === serialized) {
+      notice = "Custom settings saved."
+      noticeError = false
+    } else {
+      savingPreferences = true
+      preferencesFile.setText(serialized)
+    }
+    editRow = null
+    keyCatcher.forceActiveFocus()
+  }
+
+  function runAction(action, row) {
+    if (actionProc.running) return
+    var command = Model.actionCommand(action, row)
+    if (!command.length) return
+    actionProc.label = action + " · " + row.name
+    actionProc.command = ["timeout", "45"].concat(command)
+    noticeError = false
+    notice = "Working: " + actionProc.label
+    actionProc.running = true
+  }
+
+  function showLogs(c) {
+    if (logsProc.running) return
+    logsName = c.name
+    logsId = c.id
+    logsText = "Loading…"
+    logsProc.command = ["timeout", "10", "docker", "logs", "--tail", "200", "--timestamps", c.id]
+    logsProc.running = true
+  }
+
+  FileView {
+    id: preferencesFile
+    path: Quickshell.env("HOME") + "/.config/omarchy/rohirik-docker-monitor.json"
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var data = JSON.parse(text())
+        if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid preferences")
+        root.preferences = data
+      } catch (e) {
+        root.notice = "Could not read saved custom groups: " + e
+        root.noticeError = true
+      }
+    }
+    onFileChanged: reload()
+    onSaved: {
+      if (!root.savingPreferences) return
+      root.savingPreferences = false
+      root.notice = "Custom settings saved."
+      root.noticeError = false
+    }
+    onSaveFailed: {
+      root.savingPreferences = false
+      root.notice = "Could not save custom settings."
+      root.noticeError = true
+    }
+  }
+
+  Process {
+    id: actionProc
+    property string label: ""
+    stdout: StdioCollector { id: actionOut; waitForEnd: true }
+    stderr: StdioCollector { id: actionErr; waitForEnd: true }
+    onExited: function(code, status) {
+      root.noticeError = code !== 0
+      root.notice = code === 0 ? "Completed: " + label :
+          "Failed: " + label + "\n" + (actionErr.text || actionOut.text || "Command timed out or failed.")
+      root.refresh()
+    }
+  }
+
+  Process {
+    id: logsProc
+    stdout: StdioCollector { id: logsOut; waitForEnd: true }
+    stderr: StdioCollector { id: logsErr; waitForEnd: true }
+    onExited: function(code, status) {
+      var lines = (logsOut.text + "\n" + logsErr.text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n")
+      // Docker sends application stderr separately. Timestamps restore chronology.
+      lines.sort()
+      root.logsText = (code ? "Docker logs failed (" + code + ")\n" : "") +
+          (lines.slice(-200).join("\n").slice(-60000) || "No logs available.")
+    }
+  }
+
+  property string containerTab: "overview"
+  readonly property var selectedContainer: containers.find(function(c) { return c.id === expandedContainerId }) || null
+  readonly property bool containerPage: expandedContainerId !== ""
+  readonly property var currentSubject: containerPage ? selectedContainer : selectedGroup
+  property bool manageGroup: false
+  property string expandedContainerId: ""
+
+  function scrollToTop() { scrollArea.contentItem.contentY = 0; keyCatcher.forceActiveFocus() }
+
+  function activateRow(row) {
+    if (!row) return
+    if (!detailPage) openGroup(row.key)
+    else if (!row.isGroup && !containerPage) {
+      expandedContainerId = row.id
+      containerTab = "overview"
+      selectedIndex = 0
+      cursorActive = false
+      scrollArea.contentItem.contentY = 0
+      editRow = null
+      logsName = ""
+    }
+  }
+
+  property string selectedGroupKey: ""
+  readonly property var groups: Model.groupContainers(containers, preferences)
+  readonly property var activeGroups: groups.filter(function(g) {
+    return g.containers.some(function(c) {
+      return ["running", "restarting", "paused"].indexOf(c.status) >= 0
+    })
+  })
+  readonly property var selectedGroup: groups.find(function(g) { return g.key === selectedGroupKey }) || null
+  readonly property bool detailPage: selectedGroupKey !== ""
+  readonly property var rows: containerPage ? (selectedContainer ? [selectedContainer] : []) : (detailPage ? (selectedGroup ? [selectedGroup].concat(selectedGroup.containers) : []) : activeGroups)
+
+  function openGroup(key) {
+    selectedGroupKey = key
+    resetPage()
+  }
+
+  function resetPage() {
+    containerTab = "overview"
+    manageGroup = false
+    expandedContainerId = ""
+    editRow = null
+    logsName = ""
+    selectedIndex = 0
+    cursorActive = false
+    notice = ""
+    scrollArea.contentItem.contentY = 0
+    keyCatcher.forceActiveFocus()
+  }
+
+  function goBack() {
+    if (editRow) { editRow = null; keyCatcher.forceActiveFocus() }
+    else if (logsName) { logsName = ""; keyCatcher.forceActiveFocus() }
+    else if (manageGroup) manageGroup = false
+    else if (expandedContainerId) { expandedContainerId = ""; containerTab = "overview"; scrollArea.contentItem.contentY = 0 }
+    else if (detailPage) { selectedGroupKey = ""; resetPage() }
+    else close()
+  }
+
+  // Keyboard cursor over the container list.
+  property int selectedIndex: 0
+  property bool cursorActive: false
+
+  // true while the user is dragging a slider — pauses the periodic refresh
+  // so the model does not change underneath the pointer.
+  property bool userInteracting: false
+
+  // Local per-container limit preview (name -> MB) while the
+  // `docker update` is still in flight; keeps the knob from snapping back.
+  property var memOverrides: ({})
+
+  // Queue of pending `docker update` jobs: [{name, mb}]. One Process at a time.
+  property var pendingSets: []
+  property string pendingKeyboardName: ""
+
+  // Floor guards against a misconfigured refreshMs (0/negative would hammer
+  // the daemon in a tight timer loop).
+  readonly property int refreshMs: Math.max(500, setting("refreshMs", 3000))
+  readonly property int hostMemMb: Math.max(16384, Math.round(hostMemBytes / 1048576))
+  readonly property int memMin: 6
+  readonly property int memStep: 128
+
+  function containerLimitMb(c) {
+    return c && c.memLimitBytes > 0 ? Math.round(c.memLimitBytes / 1048576) : 0
+  }
+
+  // Effective limit shown: local override > real limit > host RAM
+  // (container with no configured limit).
+  function effectiveMb(c) {
+    if (!c) return memMin
+    var override = memOverrides[c.name]
+    if (override !== undefined) return override
+    var limit = containerLimitMb(c)
+    return limit > 0 ? limit : hostMemMb
+  }
+
+  function setOverride(name, mb) {
+    var next = {}
+    for (var key in memOverrides) next[key] = memOverrides[key]
+    next[name] = mb
+    memOverrides = next
+  }
+
+  function clearOverride(name) {
+    if (memOverrides[name] === undefined) return
+    var next = {}
+    for (var key in memOverrides) if (key !== name) next[key] = memOverrides[key]
+    memOverrides = next
+  }
+
+  // Drops pending overrides for containers that are no longer listed, so a
+  // removed container cannot keep a stale limit preview behind in the slider.
+  function pruneOverrides(names) {
+    var next = {}
+    for (var key in memOverrides) {
+      if (names.indexOf(key) >= 0) next[key] = memOverrides[key]
+    }
+    if (Object.keys(next).length !== Object.keys(memOverrides).length) memOverrides = next
+  }
+
+  function refresh() {
+    if (!refreshProc.running) refreshProc.running = true
+  }
+
+  // Applies `docker update --memory <mb>m`. --memory-swap -1 follows along so the
+  // daemon rejects limits larger than the currently configured swap.
+  function setMemory(name, mb) {
+    if (!name) return
+    var clamped = Model.clampMemMb(mb, hostMemMb)
+    setOverride(name, clamped)
+
+    var queue = pendingSets.slice()
+    for (var i = 0; i < queue.length; i++) {
+      if (queue[i].name === name) {
+        queue[i].mb = clamped
+        pendingSets = queue
+        startNextSet()
+        return
+      }
+    }
+    queue.push({ name: name, mb: clamped })
+    pendingSets = queue
+    startNextSet()
+  }
+
+  function startNextSet() {
+    if (setProc.running || pendingSets.length === 0) return
+    var job = pendingSets[0]
+    pendingSets = pendingSets.slice(1)
+    setProc.command = ["docker", "update", "--memory", String(job.mb) + "m", "--memory-swap", "-1", job.name]
+    setProc.running = true
+  }
+
+  function moveCursor(delta) {
+    if (rows.length === 0) return
+    var next = selectedIndex + delta
+    if (next < 0) next = 0
+    if (next > rows.length - 1) next = rows.length - 1
+    selectedIndex = next
+  }
+
+  function clampCursor() {
+    if (rows.length === 0) {
+      selectedIndex = 0
+      return
+    }
+    if (selectedIndex > rows.length - 1) selectedIndex = rows.length - 1
+    if (selectedIndex < 0) selectedIndex = 0
+  }
+
+  function adjustSelectedMem(deltaSteps) {
+    if (selectedIndex < 0 || selectedIndex >= rows.length) return
+    var c = rows[selectedIndex]
+    if (containerTab !== "settings" || !c || c.isGroup || c.id !== expandedContainerId || c.status !== "running") return
+    var next = Model.clampMemMb(effectiveMb(c) + deltaSteps * memStep, hostMemMb)
+    setOverride(c.name, next)
+    pendingKeyboardName = c.name
+    memDebounce.restart()
+  }
+
+  function ensureCursorVisible(item) {
+    if (!item || !scrollArea) return
+    var flick = scrollArea.contentItem
+    if (!flick || flick.contentY === undefined) return
+    var pt = item.mapToItem(flick.contentItem || flick, 0, 0)
+    var top = pt.y
+    var bottom = top + (item.height || 0)
+    var viewTop = flick.contentY
+    var viewBottom = viewTop + flick.height
+    var margin = 6
+    if (top < viewTop + margin) flick.contentY = Math.max(0, top - margin)
+    else if (bottom > viewBottom - margin)
+      flick.contentY = bottom + margin - flick.height
+  }
+
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
+  Component.onCompleted: refresh()
+
+  onOpenedChanged: {
+    if (opened) {
+      selectedGroupKey = ""
+      resetPage()
+      refresh()
+      selectedIndex = 0
+      cursorActive = false
+    }
+  }
+
+  onRowsChanged: clampCursor()
+
+  Timer {
+    interval: root.refreshMs
+    running: root.opened
+    repeat: true
+    onTriggered: if (!root.userInteracting && !root.editRow) root.refresh()
+  }
+
+  Process {
+    id: refreshProc
+    command: ["bash", "-c", Model.snapshotScript]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var snap = Model.parseSnapshot(String(text || ""))
+        root.dockerAvailable = snap.dockerAvailable
+        root.dockerVersion = snap.dockerVersion
+        root.hostMemBytes = snap.hostMemBytes
+        root.history = Model.addHistory(root.history, snap.containers, root.preferences, Date.now())
+        root.containers = snap.containers
+        if (snap.error) { root.notice = snap.error; root.noticeError = true }
+        root.pruneOverrides(snap.containers.map(function(c) { return c.name }))
+      }
+    }
+  }
+
+  Process {
+    id: setProc
+    property string finishedName: ""
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onRunningChanged: {
+      if (running) {
+        // The in-flight job name is the 6th argument of the command.
+        finishedName = String(command[6] || "")
+        return
+      }
+      root.clearOverride(finishedName)
+      root.startNextSet()
+      root.refresh()
+    }
+  }
+
+  // Debounce for keyboard (h/l) adjustments.
+  Timer {
+    id: memDebounce
+    interval: 300
+    repeat: false
+    onTriggered: {
+      var c = root.containers.find(function(item) { return item.name === root.pendingKeyboardName })
+      if (!c) return
+      root.setMemory(c.name, root.effectiveMb(c))
+    }
+  }
+
+  BarIconButton {
+    id: button
+    anchors.fill: parent
+    bar: root.bar
+    text: "\uf308"
+    onPressed: function(b) { root.toggle() }
+  }
+
+  KeyboardPanel {
+    id: panel
+    anchorItem: button
+    owner: root
+    bar: root.bar
+    open: root.opened
+    focusTarget: keyCatcher
+    contentWidth: panel.fittedContentWidth(Style.space(root.detailPage ? 480 : 380))
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight + fixedHeader.height, Style.space(560))
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      blocked: groupField.activeFocus || urlField.activeFocus || logArea.activeFocus
+      anchors.fill: parent
+      onMoveRequested: function(dx, dy) {
+        if (!root.cursorActive) { root.cursorActive = true; return }
+        if (dy !== 0) root.moveCursor(dy)
+        else if (dx !== 0) root.adjustSelectedMem(dx)
+      }
+      onActivateRequested: {
+        var row = root.rows[root.selectedIndex]
+        if (root.cursorActive) root.activateRow(row)
+      }
+      onCloseRequested: root.goBack()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onTextKey: function(t) { if (t === "r") root.refresh() }
+
+      Column {
+        id: fixedHeader
+        visible: root.detailPage
+        width: parent.width
+        height: visible ? implicitHeight + Style.space(14) : 0
+        spacing: Style.space(10)
+        Item {
+          width: parent.width
+          implicitHeight: headerTitle.implicitHeight + headerStatus.implicitHeight + Style.space(8)
+          MonitorButton {
+            id: backButton
+            text: "‹"
+            tooltipText: root.containerPage ? "Back to group" : "Back to groups"
+            anchors.left: parent.left
+            onClicked: {
+              root.editRow = null
+              root.logsName = ""
+              if (root.containerPage) {
+                root.expandedContainerId = ""
+                root.containerTab = "overview"
+                root.selectedIndex = 0
+                root.scrollToTop()
+              } else { root.selectedGroupKey = ""; root.resetPage() }
+            }
+          }
+          Text {
+            id: headerTitle
+            anchors.left: backButton.right
+            anchors.leftMargin: Style.space(10)
+            anchors.right: moreButton.left
+            anchors.rightMargin: Style.space(10)
+            text: root.currentSubject ? root.serviceIcon(root.currentSubject) + "  " + root.currentSubject.name : "Unavailable"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            id: headerStatus
+            anchors.left: headerTitle.left
+            anchors.right: headerTitle.right
+            anchors.top: headerTitle.bottom
+            anchors.topMargin: Style.space(5)
+            text: root.currentSubject ? (root.containerPage ? Model.healthText(root.currentSubject) : root.currentSubject.summary) : ""
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.currentSubject && Model.needsAttention(root.currentSubject) ? root.bar.urgent : Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+          MonitorButton {
+            id: moreButton
+            anchors.right: parent.right
+            text: "⋯"
+            tooltipText: root.containerPage ? "Container actions" : "Group actions"
+            enabled: root.currentSubject !== null
+            onClicked: actionsMenu.popup()
+            Menu {
+              id: actionsMenu
+              palette.window: Color.background
+              palette.windowText: root.bar.foreground
+              MenuItem {
+                text: "Start"
+                enabled: !actionProc.running && Model.actionCommand("start", root.currentSubject).length > 0
+                onTriggered: root.runAction("start", root.currentSubject)
+              }
+              MenuItem {
+                text: "Restart"
+                enabled: !actionProc.running && Model.actionCommand("restart", root.currentSubject).length > 0
+                onTriggered: root.runAction("restart", root.currentSubject)
+              }
+              MenuItem {
+                text: "Stop"
+                enabled: !actionProc.running && Model.actionCommand("stop", root.currentSubject).length > 0
+                onTriggered: root.runAction("stop", root.currentSubject)
+              }
+              MenuItem {
+                visible: !root.containerPage
+                height: visible ? implicitHeight : 0
+                text: "Rename group"
+                onTriggered: root.openEditor(root.currentSubject)
+              }
+            }
+          }
+        }
+        Row {
+          visible: root.containerPage
+          spacing: Style.space(8)
+          MonitorButton {
+            text: "Overview"
+            enabled: root.containerTab !== "overview"
+            onClicked: { root.containerTab = "overview"; root.editRow = null; root.scrollToTop() }
+          }
+          MonitorButton {
+            text: "Settings"
+            enabled: root.containerTab !== "settings"
+            onClicked: {
+              root.containerTab = "settings"
+              root.logsName = ""
+              root.openEditor(root.selectedContainer)
+            }
+          }
+        }
+        PanelSeparator { foreground: root.bar.foreground }
+      }
+
+      ScrollView {
+        id: scrollArea
+        anchors.top: fixedHeader.bottom
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        clip: true
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        ScrollBar.vertical.policy: panelColumn.implicitHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+        Binding {
+          target: scrollArea.contentItem
+          property: "interactive"
+          value: panelColumn.implicitHeight > scrollArea.height
+        }
+
+        Column {
+          id: panelColumn
+          width: scrollArea.availableWidth
+          spacing: Style.space(root.detailPage ? 14 : 4)
+
+          Item {
+            visible: !root.detailPage
+            width: parent.width
+            implicitHeight: hostSummary.implicitHeight + Style.space(16)
+
+            Text {
+              id: hostSummary
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.margins: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Host   CPU " + (root.hostStats.cpu === undefined || root.hostStats.cpu === null ? "—" : root.hostStats.cpu + "%") +
+                    " · RAM " + (root.hostStats.total > 0 ?
+                      (root.hostStats.used / 1073741824).toFixed(1) + " / " +
+                      (root.hostStats.total / 1073741824).toFixed(1) + " GiB" : "—")
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            MouseArea {
+              id: hostHover
+              anchors.fill: parent
+              hoverEnabled: true
+              acceptedButtons: Qt.NoButton
+            }
+            PanelToolTip {
+              visible: hostHover.containsMouse
+              text: "Whole machine · CPU across all cores · RAM excludes available cache"
+              fontFamily: root.bar.fontFamily
+            }
+          }
+
+          PanelSeparator {
+            visible: !root.detailPage
+            foreground: root.bar.foreground
+          }
+
+          Text {
+            visible: root.dockerAvailable && root.rows.length === 0
+            width: parent.width
+            text: root.detailPage ? "This group is no longer available." : "No active Docker groups"
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          // ---------- Docker unavailable ----------
+          PanelSeparator {
+            visible: !root.dockerAvailable
+            foreground: root.bar.foreground
+          }
+
+          Text {
+            visible: !root.dockerAvailable
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: "Could not reach the Docker daemon. Make sure it is running and that your user is in the docker group."
+            color: Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Text {
+            visible: root.notice !== "" && (root.detailPage || root.noticeError)
+            width: parent.width
+            text: root.notice
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: root.noticeError ? root.bar.urgent : root.bar.foreground
+            font.pixelSize: Style.font.caption
+          }
+
+          Column {
+            visible: root.editRow !== null
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              width: parent.width
+              text: root.editRow ? "Customize · " + root.editRow.name : ""
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: root.bar.foreground
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            Text {
+              width: parent.width
+              text: root.editRow && root.editRow.isGroup ? "Group display name (blank restores the original)" :
+                    "Custom group (use the same name to combine containers; blank uses Compose)"
+              wrapMode: Text.Wrap
+              color: root.bar.foreground
+              font.pixelSize: Style.font.caption
+            }
+            TextField {
+              id: groupField
+              width: parent.width
+              color: root.bar.foreground
+              placeholderText: "Group name"
+              maximumLength: 100
+              background: Rectangle { color: Qt.alpha(root.bar.foreground, 0.08); border.color: Qt.alpha(root.bar.foreground, 0.3); radius: 4 }
+              Keys.onEscapePressed: { root.editRow = null; keyCatcher.forceActiveFocus() }
+              onAccepted: root.saveEditor()
+            }
+            Text {
+              visible: root.editRow !== null && !root.editRow.isGroup
+              text: "Service URL override (blank uses detected links)"
+              color: root.bar.foreground
+              font.pixelSize: Style.font.caption
+            }
+            TextField {
+              id: urlField
+              visible: root.editRow !== null && !root.editRow.isGroup
+              width: parent.width
+              color: root.bar.foreground
+              placeholderText: "https://service.example.com"
+              maximumLength: 2048
+              background: Rectangle { color: Qt.alpha(root.bar.foreground, 0.08); border.color: Qt.alpha(root.bar.foreground, 0.3); radius: 4 }
+              Keys.onEscapePressed: { root.editRow = null; keyCatcher.forceActiveFocus() }
+              onAccepted: root.saveEditor()
+            }
+            Row {
+              spacing: Style.space(8)
+              MonitorButton { text: "Save"; onClicked: root.saveEditor() }
+              MonitorButton { text: "Cancel"; onClicked: { root.editRow = null; keyCatcher.forceActiveFocus() } }
+            }
+          }
+
+          MonitorButton {
+            visible: root.containerPage && root.containerTab === "settings" && !root.editRow && root.selectedContainer !== null
+            text: "Edit group & URL"
+            onClicked: root.openEditor(root.selectedContainer)
+          }
+
+          // ---------- Containers ----------
+          Repeater {
+            model: root.rows
+
+            delegate: CursorSurface {
+              id: containerRow
+              required property var modelData
+              required property int index
+
+              readonly property var container: modelData
+              readonly property bool expanded: !container.isGroup && root.expandedContainerId === container.id
+
+              width: panelColumn.width
+              implicitHeight: rowColumn.implicitHeight + (root.detailPage ? Style.spacing.xl : Style.space(20))
+              hasCursor: root.cursorActive && root.selectedIndex === index
+              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(containerRow)
+              foreground: root.bar.foreground
+              fill: Style.hoverFillFor(root.bar.foreground, Color.accent)
+
+              Column {
+                id: rowColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.space(containerRow.container.isGroup ? 10 : 22)
+                anchors.rightMargin: Style.space(10)
+                spacing: Style.space(6)
+
+                Text {
+                  visible: root.detailPage && !root.containerPage && containerRow.index === 1
+                  text: "Containers"
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  bottomPadding: Style.space(6)
+                }
+
+                // Row 1: status dot · name · cpu/mem
+                Item {
+                  id: rowHeader
+                  visible: !root.containerPage || root.containerTab === "overview"
+                  width: parent.width
+                  implicitHeight: nameText.implicitHeight + (root.detailPage ? 0 : usageRow.implicitHeight + Style.space(5))
+
+                  Text {
+                    id: statusDot
+                    visible: root.detailPage
+                    text: "●"
+                    color: Model.needsAttention(containerRow.container) ? root.bar.urgent : (containerRow.container.status === "running" ? Color.accent : Qt.darker(root.bar.foreground, 1.6))
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Text {
+                    id: serviceGlyph
+                    visible: !root.detailPage
+                    text: root.serviceIcon(containerRow.container)
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    width: Style.space(20)
+                    horizontalAlignment: Text.AlignHCenter
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                  }
+
+                  Text {
+                    id: nameText
+                    textFormat: Text.PlainText
+                    text: root.detailPage && (containerRow.container.isGroup || root.containerPage) ? "Usage" : containerRow.container.name
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    elide: Text.ElideRight
+                    anchors.left: root.detailPage ? statusDot.right : serviceGlyph.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.right: root.detailPage ? statsText.left : rowIndicators.left
+                    anchors.rightMargin: Style.space(8)
+                    anchors.top: parent.top
+                  }
+
+                  Text {
+                    id: statsText
+                    visible: root.detailPage
+                    text: {
+                      if (!root.detailPage) return "CPU " + (containerRow.container.cpuPercent || "—") + " · RAM " + Model.formatBytes(containerRow.container.memUsageBytes)
+                      var c = containerRow.container
+                      var parts = []
+                      if (c.cpuPercent !== "") parts.push("CPU " + c.cpuPercent)
+                      if (c.memUsageBytes > 0) parts.push(Model.formatBytes(c.memUsageBytes))
+                      return parts.join(" · ")
+                    }
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    anchors.right: root.detailPage ? parent.right : undefined
+                    anchors.left: root.detailPage ? undefined : parent.left
+                    anchors.bottom: parent.bottom
+                  }
+                  Row {
+                    id: rowIndicators
+                    visible: !root.detailPage
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    spacing: Style.space(8)
+                    Text {
+                      visible: Model.needsAttention(containerRow.container)
+                      text: "!"
+                      color: "#e5b567"
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.body
+                      font.bold: true
+                    }
+                    Text {
+                      text: "›"
+                      opacity: groupMouse.containsMouse || containerRow.hasCursor ? 1 : 0
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+                  }
+
+                  Row {
+                    id: usageRow
+                    visible: !root.detailPage
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    spacing: Style.space(18)
+                    Repeater {
+                      model: ["CPU", "RAM"]
+                      delegate: Item {
+                        required property string modelData
+                        width: (usageRow.width - usageRow.spacing) / 2
+                        implicitHeight: usageLabel.implicitHeight
+                        Text {
+                          id: usageLabel
+                          text: modelData
+                          anchors.left: parent.left
+                          color: Qt.darker(root.bar.foreground, 1.4)
+                          font.family: root.bar.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          text: modelData === "CPU" ? (containerRow.container.cpuPercent || "—") :
+                                (containerRow.container.statsCount > 0 ? Model.formatBytes(containerRow.container.memUsageBytes) : "—")
+                          anchors.right: parent.right
+                          color: root.bar.foreground
+                          font.family: root.bar.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+                      }
+                    }
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    enabled: !root.containerPage && (!root.detailPage || !containerRow.container.isGroup)
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      root.selectedIndex = containerRow.index
+                      root.activateRow(containerRow.container)
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  visible: root.detailPage && !root.containerPage && !containerRow.container.isGroup
+                  textFormat: Text.PlainText
+                  wrapMode: Text.Wrap
+                  text: containerRow.container.isGroup ? containerRow.container.summary :
+                        Model.healthText(containerRow.container) + " · " + (containerRow.container.restarts || 0) + " restarts"
+                  color: Model.needsAttention(containerRow.container) ? root.bar.urgent : Qt.darker(root.bar.foreground, 1.25)
+                  font.pixelSize: Style.font.caption
+                }
+
+                Row {
+                  width: parent.width
+                  spacing: Style.space(12)
+                  visible: root.detailPage && (containerRow.container.isGroup || (root.containerPage && root.containerTab === "overview"))
+                  HistoryGraph {
+                    width: (parent.width - parent.spacing) / 2
+                    metric: "cpu"
+                    foreground: root.bar.foreground
+                    samples: root.history[containerRow.container.isGroup ? containerRow.container.key : containerRow.container.id] || []
+                  }
+                  HistoryGraph {
+                    width: (parent.width - parent.spacing) / 2
+                    metric: "mem"
+                    foreground: root.bar.foreground
+                    samples: root.history[containerRow.container.isGroup ? containerRow.container.key : containerRow.container.id] || []
+                  }
+                }
+
+                Flow {
+                  visible: root.detailPage && (containerRow.container.isGroup || (root.containerPage && root.containerTab === "overview"))
+                  width: parent.width
+                  spacing: Style.space(6)
+                  Repeater {
+                    model: root.urlsFor(containerRow.container)
+                    delegate: MonitorButton {
+                      required property string modelData
+                      text: root.urlsFor(containerRow.container).length === 1 ? "Open service ↗" : "Open " + modelData.replace(/^https?:\/\//, "")
+                      tooltipText: modelData
+                      onClicked: Qt.openUrlExternally(modelData)
+                    }
+                  }
+                  MonitorButton {
+                    visible: root.containerPage
+                    text: "View logs"
+                    enabled: !logsProc.running
+                    onClicked: root.showLogs(containerRow.container)
+                  }
+                }
+
+                Column {
+                  visible: root.containerPage && root.containerTab === "overview"
+                  width: parent.width
+                  spacing: Style.space(6)
+                  Text {
+                    text: "Internal IP"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Repeater {
+                    model: containerRow.container.internalAddresses || []
+                    delegate: Text {
+                      required property var modelData
+                      width: parent.width
+                      text: modelData.address + " · " + modelData.network
+                      textFormat: Text.PlainText
+                      wrapMode: Text.WrapAnywhere
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+                  Text {
+                    visible: (containerRow.container.internalAddresses || []).length === 0
+                    text: "No container IP assigned"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                // Row 2: image
+                Text {
+                  visible: root.containerPage && root.containerTab === "settings"
+                  text: (containerRow.container.service ? containerRow.container.service + " · " : "") + (containerRow.container.image || "") + " · " + (containerRow.container.id || "")
+                  color: Qt.darker(root.bar.foreground, 1.6)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+
+                // Row 3: RAM limit header
+                Item {
+                  visible: root.containerPage && root.containerTab === "settings"
+                  width: parent.width
+                  implicitHeight: ramValue.implicitHeight
+
+                  Text {
+                    id: ramHeader
+                    text: "RAM LIMIT"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1.2
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Text {
+                    id: ramValue
+                    text: {
+                      var c = containerRow.container
+                      var shown = ramSlider.dragging ? ramSlider.liveValue : root.effectiveMb(c)
+                      var label = Model.formatMb(shown)
+                      if (root.containerLimitMb(c) === 0 && root.memOverrides[c.name] === undefined)
+                        label += " (unlimited)"
+                      return label
+                    }
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                }
+
+                // Row 4: RAM slider
+                PanelSlider {
+                  id: ramSlider
+                  enabled: containerRow.container.status === "running"
+                  visible: root.containerPage && root.containerTab === "settings"
+                  bar: root.bar
+                  width: parent.width
+                  minimum: root.memMin
+                  maximum: root.hostMemMb
+                  step: root.memStep
+                  integer: true
+                  value: root.effectiveMb(containerRow.container)
+                  onMoved: function(v) {
+                    root.userInteracting = true
+                    root.setOverride(containerRow.container.name, v)
+                  }
+                  onReleased: function(v) {
+                    root.userInteracting = false
+                    root.setMemory(containerRow.container.name, v)
+                  }
+                }
+              }
+
+              PanelToolTip {
+                visible: !root.detailPage && groupMouse.containsMouse
+                text: containerRow.container.name + (Model.needsAttention(containerRow.container) ? " · " + containerRow.container.summary : "") + " · Open details"
+                fontFamily: root.bar.fontFamily
+              }
+
+              MouseArea {
+                id: groupMouse
+                hoverEnabled: true
+                anchors.fill: parent
+                enabled: !root.detailPage
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openGroup(containerRow.container.key)
+              }
+
+              // Do not steal slider clicks: HoverHandler only tracks the mouse and
+              // updates the keyboard cursor without consuming the click.
+              HoverHandler {
+                onHoveredChanged: if (hovered) {
+                  root.cursorActive = true
+                  root.selectedIndex = containerRow.index
+                }
+              }
+            }
+          }
+
+          Column {
+            visible: root.logsName !== ""
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              width: parent.width
+              text: "Logs · " + root.logsName + " · latest 200 lines"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: root.bar.foreground
+              font.pixelSize: Style.font.caption
+            }
+            ScrollView {
+              width: parent.width
+              height: Style.space(220)
+              clip: true
+              TextArea {
+                id: logArea
+                text: root.logsText
+                textFormat: TextEdit.PlainText
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.WrapAnywhere
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                background: Rectangle { color: Qt.alpha(root.bar.foreground, 0.06) }
+                Keys.onEscapePressed: { root.logsName = ""; keyCatcher.forceActiveFocus() }
+              }
+            }
+            Row {
+              spacing: Style.space(8)
+              MonitorButton {
+                text: logsProc.running ? "Loading…" : "Refresh logs"
+                enabled: !logsProc.running
+                onClicked: root.showLogs({name: root.logsName, id: root.logsId})
+              }
+              MonitorButton { text: "Close logs"; onClicked: { root.logsName = ""; keyCatcher.forceActiveFocus() } }
+            }
+          }
+
+          Item {
+            width: parent.width
+            height: Style.space(4)
+          }
+        }
+      }
+    }
+  }
+}

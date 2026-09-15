@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "rohirik.docker-monitor",
+  "name": "Docker Monitor",
+  "version": "0.1.0",
+  "author": "RohiRIK",
+  "license": "MIT",
+  "description": "A compact Docker dashboard with host stats, Compose groups, container metrics, logs, internal IPs, and controls.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Docker Monitor",
+    "description": "A compact Docker dashboard with host stats, Compose groups, container metrics, logs, internal IPs, and controls.",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
