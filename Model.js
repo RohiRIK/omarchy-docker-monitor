@@ -1,30 +1,14 @@
 // Docker plugin data logic: collection script + pure parsers.
 // Kept separate from the UI so it can be tested with node (see README.md).
 
-// Bash script run by the panel Process. Output is sectioned:
-//   ==DOCKER==     daemon version or "unavailable"
-//   ==HOST==       host total RAM in bytes
-//   ==CONTAINERS== one line per container: id|name|image|status|memLimitBytes
-//   ==STATS==      one line per container: name|cpuPerc|memUsage|memPerc
-// "|" is a safe separator: container/image names cannot contain "|".
-var snapshotScript = [
-  "echo '==DOCKER=='",
-  "docker version --format '{{.Server.Version}}' 2>/dev/null || echo unavailable",
-  "echo '==HOST=='",
-  "mem=$(awk '/MemTotal/{print $2 * 1024}' /proc/meminfo 2>/dev/null)",
-  "if [ -z \"$mem\" ]; then mem=$(docker info --format '{{.MemTotal}}' 2>/dev/null); fi",
-  "echo \"${mem:-0}\"",
-  "echo '==CONTAINERS=='",
-  "echo '==INSPECT=='",
-  "ids=$(docker ps -aq 2>/dev/null)",
-  "if [ -n \"$ids\" ]; then",
-  "  docker inspect --format '{\"id\":{{json .Id}},\"name\":{{json .Name}},\"image\":{{json .Config.Image}},\"status\":{{json .State.Status}},\"memLimitBytes\":{{.HostConfig.Memory}},\"labels\":{{json .Config.Labels}},\"health\":{{if .State.Health}}{{json .State.Health.Status}}{{else}}\"\"{{end}},\"restarts\":{{.RestartCount}},\"ports\":{{json .NetworkSettings.Ports}},\"networks\":{{json .NetworkSettings.Networks}}}' $ids 2>/dev/null",
-  "fi",
-  "echo '==STATS=='",
-  "if [ -n \"$ids\" ]; then",
-  "  docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>/dev/null",
-  "fi"
-].join("\n")
+// docker-helper.py collects the snapshot with a deadline and byte limits.
+// Its output is sectioned:
+//   ==DOCKER==  daemon version or "unavailable"
+//   ==HOST==    host total RAM in bytes
+//   ==INSPECT== one JSON object per container
+//   ==STATS==   one line per container: name|cpuPerc|memUsage|memPerc
+//   ==ERROR==   user-facing messages when collection was cut short
+// "|" is a safe separator: container names cannot contain "|".
 
 function parseSizeToBytes(text) {
   var m = /^(\d+(?:\.\d+)?)\s*([KMGT]?i?B)$/i.exec(String(text || "").trim())
@@ -134,6 +118,9 @@ function parseSnapshot(text) {
       memPercent: stats ? stats.memPercent : ""
     })
   }
+
+  var errors = (sections["ERROR"] || []).map(function(line) { return line.trim() }).filter(Boolean)
+  if (errors.length) result.error = errors.join("\n")
 
   ;(sections["INSPECT"] || []).forEach(function(line) {
     if (!line.trim()) return
@@ -269,6 +256,8 @@ function visibleRows(groups, expanded) {
   return rows
 }
 
+// Returns the Docker argv for a lifecycle action; the panel runs it through
+// docker-helper.py, which re-validates the verb and ids.
 function actionCommand(action, row) {
   if (["start", "stop", "restart"].indexOf(action) < 0 || !row) return []
   var members = row.isGroup ? row.containers : [row]
@@ -303,7 +292,6 @@ if (typeof module !== "undefined") {
     addHistory: addHistory,
     groupContainers: groupContainers,
     visibleRows: visibleRows,
-    snapshotScript: snapshotScript,
     parseSizeToBytes: parseSizeToBytes,
     formatBytes: formatBytes,
     formatMb: formatMb,

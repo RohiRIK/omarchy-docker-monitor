@@ -47,6 +47,21 @@ Panel {
 
   property var hostStats: ({})
 
+  // All Docker access goes through this helper: it enforces an overall deadline
+  // and per-stream byte limits, so Docker output reaching the shell stays small.
+  // The outer timeout is a backstop in case the helper itself stalls.
+  readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("docker-helper.py").toString().replace("file://", ""))
+  function helperCommand(seconds, args) {
+    return ["timeout", "-k", "2", String(seconds), "python3", helperPath].concat(args)
+  }
+  function helperResult(text) {
+    try {
+      var result = JSON.parse(text)
+      if (result && typeof result.code === "number" && typeof result.text === "string") return result
+    } catch (e) {}
+    return { code: 1, text: "" }
+  }
+
   Process {
     id: hostStatsProc
     command: ["python3", Qt.resolvedUrl("host-stats.py").toString().replace("file://", "")]
@@ -118,7 +133,7 @@ Panel {
     var command = Model.actionCommand(action, row)
     if (!command.length) return
     actionProc.label = action + " · " + row.name
-    actionProc.command = ["timeout", "45"].concat(command)
+    actionProc.command = root.helperCommand(55, ["action"].concat(command.slice(1)))
     noticeError = false
     notice = "Working: " + actionProc.label
     actionProc.running = true
@@ -129,7 +144,7 @@ Panel {
     logsName = c.name
     logsId = c.id
     logsText = "Loading…"
-    logsProc.command = ["timeout", "10", "docker", "logs", "--tail", "200", "--timestamps", c.id]
+    logsProc.command = root.helperCommand(15, ["logs", c.id])
     logsProc.running = true
   }
 
@@ -167,25 +182,24 @@ Panel {
     id: actionProc
     property string label: ""
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
-    stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function(code, status) {
-      root.noticeError = code !== 0
-      root.notice = code === 0 ? "Completed: " + label :
-          "Failed: " + label + "\n" + (actionErr.text || actionOut.text || "Command timed out or failed.")
+      var result = root.helperResult(actionOut.text)
+      var failed = code !== 0 || result.code !== 0
+      root.noticeError = failed
+      root.notice = failed ? "Failed: " + label + "\n" + (result.text || "Command timed out or failed.") :
+          "Completed: " + label
       root.refresh()
     }
   }
 
   Process {
     id: logsProc
+    // The helper caps bytes read per stream, merges stdout/stderr by timestamp
+    // and returns at most the newest 60,000 characters.
     stdout: StdioCollector { id: logsOut; waitForEnd: true }
-    stderr: StdioCollector { id: logsErr; waitForEnd: true }
     onExited: function(code, status) {
-      var lines = (logsOut.text + "\n" + logsErr.text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n")
-      // Docker sends application stderr separately. Timestamps restore chronology.
-      lines.sort()
-      root.logsText = (code ? "Docker logs failed (" + code + ")\n" : "") +
-          (lines.slice(-200).join("\n").slice(-60000) || "No logs available.")
+      var result = root.helperResult(logsOut.text)
+      root.logsText = (result.text || (code ? "Docker logs failed or timed out." : "No logs available.")).slice(-60000)
     }
   }
 
@@ -340,7 +354,8 @@ Panel {
     if (setProc.running || pendingSets.length === 0) return
     var job = pendingSets[0]
     pendingSets = pendingSets.slice(1)
-    setProc.command = ["docker", "update", "--memory", String(job.mb) + "m", "--memory-swap", "-1", job.name]
+    setProc.jobName = job.name
+    setProc.command = root.helperCommand(55, ["memory", job.name, String(job.mb)])
     setProc.running = true
   }
 
@@ -412,7 +427,7 @@ Panel {
 
   Process {
     id: refreshProc
-    command: ["bash", "-c", Model.snapshotScript]
+    command: root.helperCommand(20, ["snapshot"])
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -430,13 +445,12 @@ Panel {
 
   Process {
     id: setProc
+    property string jobName: ""
     property string finishedName: ""
     stdout: StdioCollector { waitForEnd: true }
-    stderr: StdioCollector { waitForEnd: true }
     onRunningChanged: {
       if (running) {
-        // The in-flight job name is the 6th argument of the command.
-        finishedName = String(command[6] || "")
+        finishedName = jobName
         return
       }
       root.clearOverride(finishedName)
@@ -627,6 +641,7 @@ Panel {
 
             Text {
               id: hostSummary
+              textFormat: Text.PlainText
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.margins: Style.space(10)
@@ -660,6 +675,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.dockerAvailable && root.rows.length === 0
             width: parent.width
             text: root.detailPage ? "This group is no longer available." : "No active Docker groups"
@@ -675,6 +691,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: !root.dockerAvailable
             width: parent.width
             wrapMode: Text.WordWrap
@@ -708,6 +725,7 @@ Panel {
               font.bold: true
             }
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: root.editRow && root.editRow.isGroup ? "Group display name (blank restores the original)" :
                     "Custom group (use the same name to combine containers; blank uses Compose)"
@@ -726,6 +744,7 @@ Panel {
               onAccepted: root.saveEditor()
             }
             Text {
+              textFormat: Text.PlainText
               visible: root.editRow !== null && !root.editRow.isGroup
               text: "Service URL override (blank uses detected links)"
               color: root.bar.foreground
@@ -784,6 +803,7 @@ Panel {
                 spacing: Style.space(6)
 
                 Text {
+                  textFormat: Text.PlainText
                   visible: root.detailPage && !root.containerPage && containerRow.index === 1
                   text: "Containers"
                   color: Qt.darker(root.bar.foreground, 1.4)
@@ -801,6 +821,7 @@ Panel {
 
                   Text {
                     id: statusDot
+                    textFormat: Text.PlainText
                     visible: root.detailPage
                     text: "●"
                     color: Model.needsAttention(containerRow.container) ? root.bar.urgent : (containerRow.container.status === "running" ? Color.accent : Qt.darker(root.bar.foreground, 1.6))
@@ -812,6 +833,7 @@ Panel {
 
                   Text {
                     id: serviceGlyph
+                    textFormat: Text.PlainText
                     visible: !root.detailPage
                     text: root.serviceIcon(containerRow.container)
                     color: root.bar.foreground
@@ -841,6 +863,7 @@ Panel {
 
                   Text {
                     id: statsText
+                    textFormat: Text.PlainText
                     visible: root.detailPage
                     text: {
                       if (!root.detailPage) return "CPU " + (containerRow.container.cpuPercent || "—") + " · RAM " + Model.formatBytes(containerRow.container.memUsageBytes)
@@ -864,6 +887,7 @@ Panel {
                     anchors.top: parent.top
                     spacing: Style.space(8)
                     Text {
+                      textFormat: Text.PlainText
                       visible: Model.needsAttention(containerRow.container)
                       text: "!"
                       color: "#e5b567"
@@ -872,6 +896,7 @@ Panel {
                       font.bold: true
                     }
                     Text {
+                      textFormat: Text.PlainText
                       text: "›"
                       opacity: groupMouse.containsMouse || containerRow.hasCursor ? 1 : 0
                       color: root.bar.foreground
@@ -895,6 +920,7 @@ Panel {
                         implicitHeight: usageLabel.implicitHeight
                         Text {
                           id: usageLabel
+                          textFormat: Text.PlainText
                           text: modelData
                           anchors.left: parent.left
                           color: Qt.darker(root.bar.foreground, 1.4)
@@ -902,6 +928,7 @@ Panel {
                           font.pixelSize: Style.font.caption
                         }
                         Text {
+                          textFormat: Text.PlainText
                           text: modelData === "CPU" ? (containerRow.container.cpuPercent || "—") :
                                 (containerRow.container.statsCount > 0 ? Model.formatBytes(containerRow.container.memUsageBytes) : "—")
                           anchors.right: parent.right
@@ -979,6 +1006,7 @@ Panel {
                   width: parent.width
                   spacing: Style.space(6)
                   Text {
+                    textFormat: Text.PlainText
                     text: "Internal IP"
                     color: Qt.darker(root.bar.foreground, 1.4)
                     font.family: root.bar.fontFamily
@@ -998,6 +1026,7 @@ Panel {
                     }
                   }
                   Text {
+                    textFormat: Text.PlainText
                     visible: (containerRow.container.internalAddresses || []).length === 0
                     text: "No container IP assigned"
                     color: Qt.darker(root.bar.foreground, 1.4)
@@ -1008,6 +1037,7 @@ Panel {
 
                 // Row 2: image
                 Text {
+                  textFormat: Text.PlainText
                   visible: root.containerPage && root.containerTab === "settings"
                   text: (containerRow.container.service ? containerRow.container.service + " · " : "") + (containerRow.container.image || "") + " · " + (containerRow.container.id || "")
                   color: Qt.darker(root.bar.foreground, 1.6)
@@ -1025,6 +1055,7 @@ Panel {
 
                   Text {
                     id: ramHeader
+                    textFormat: Text.PlainText
                     text: "RAM LIMIT"
                     color: Qt.darker(root.bar.foreground, 1.4)
                     font.family: root.bar.fontFamily
@@ -1037,6 +1068,7 @@ Panel {
 
                   Text {
                     id: ramValue
+                    textFormat: Text.PlainText
                     text: {
                       var c = containerRow.container
                       var shown = ramSlider.dragging ? ramSlider.liveValue : root.effectiveMb(c)

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "rohirik.docker-monitor",
   "name": "Docker Monitor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "RohiRIK",
   "license": "MIT",
   "description": "A compact Docker dashboard with host stats, Compose groups, container metrics, logs, internal IPs, and controls.",

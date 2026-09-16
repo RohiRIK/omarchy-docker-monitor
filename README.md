@@ -24,7 +24,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 
 - Omarchy Quattro with its Quickshell shell and shared Ui/Commons components.
 - Docker CLI and access to the Docker daemon from your desktop session.
-- Python 3, Bash, awk, and GNU coreutils.
+- Python 3 and GNU coreutils (`timeout`).
 - Linux /proc for local host CPU and memory metrics.
 
 No extra Python packages, background service, or telemetry. Service links open in your browser only when clicked. The widget uses the Docker context/environment inherited by the shell; host metrics always describe the local Linux machine. Prefer a local Docker context when comparing host and container metrics.
@@ -62,6 +62,8 @@ Container CPU follows Docker's convention and can exceed 100% on multi-core work
 
 Memory changes apply through `docker update --memory … --memory-swap -1`. The slider applies on release; keyboard adjustments are debounced. Docker Compose may replace those limits when a container is recreated—keep durable limits in your Compose configuration.
 
+Docker is read and controlled only through `docker-helper.py`, which gives each request an overall deadline (12 s for snapshots, 10 s for logs, 45 s for actions) and per-stream byte limits (4 MiB of container metadata, 8 MiB read per log stream). Commands that exceed a limit are stopped and the panel shows a notice. Logs show at most the newest 200 lines and 60,000 characters, with each line capped at 2,000 characters. Container-provided text is always rendered as plain text.
+
 Service icons are symbolic, selected from known service/image patterns, with a Docker fallback. They are not official service logos.
 
 ## Configuration
@@ -96,7 +98,7 @@ omarchy plugin validate .
 python3 tools/render-previews.py
 ```
 
-Tests require Node.js; integration checks read the daemon and never start, stop, or change containers. If Docker cannot be reached, integration tests report a skip. The screenshot tool needs the installed Omarchy shell, runs an isolated offscreen renderer with synthetic data, and never captures your desktop or uses your Docker daemon.
+Tests require Node.js. The helper test uses a fake Docker CLI to check deadlines and output limits; integration checks read the daemon and never start, stop, or change containers. If Docker cannot be reached, integration tests report a skip. The screenshot tool needs the installed Omarchy shell, runs an isolated offscreen renderer with synthetic data, and never captures your desktop or uses your Docker daemon.
 
 ## Credits and license
 

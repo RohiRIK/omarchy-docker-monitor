@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Integration test: runs the plugin's snapshot script against a real Docker
+# Integration test: runs the plugin's snapshot helper against a real Docker
 # daemon and validates the parsed shape. Skipped (ok - skip) when no daemon
 # is reachable.
 
@@ -18,8 +18,7 @@ if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
   exit 0
 fi
 
-SCRIPT=$(node -e 'const M = require(process.argv[1]); console.log(M.snapshotScript)' "$ROOT/Model.js")
-SNAPSHOT=$(bash -c "$SCRIPT" 2>/dev/null || true)
+SNAPSHOT=$(python3 "$ROOT/docker-helper.py" snapshot 2>/dev/null || true)
 
 if [[ -z $SNAPSHOT ]]; then
   echo "not ok - snapshot script produced no output" >&2

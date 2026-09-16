@@ -11,6 +11,7 @@ Column {
       ...samples.map(function(s) { return s[root.metric] || 0 }))
   spacing: Style.space(3)
   Text {
+    textFormat: Text.PlainText
     width: parent.width
     text: (root.metric === "cpu" ? "CPU" : "RAM") + " · peak " +
           (root.metric === "cpu" ? Math.round(root.peak * 10) / 10 + "%" : Model.formatBytes(root.peak))
@@ -48,6 +49,7 @@ Column {
       ctx.stroke()
     }
     Text {
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       visible: root.samples.length < 2
       text: "Collecting…"

@@ -149,14 +149,12 @@ assertEqual(Model.parseSnapshot(weirdStats).containers[0].cpuPercent, "--", "par
 assertEqual(Model.parseSnapshot(weirdStats).containers[0].memUsageBytes, 0, "parseSnapshot maps placeholder mem usage to zero")
 
 // ---------------------------------------------------------------------------
-// snapshotScript
+// helper error section
 // ---------------------------------------------------------------------------
 
-assert(Model.snapshotScript.indexOf("==DOCKER==") >= 0, "snapshotScript carries the DOCKER section header")
-assert(Model.snapshotScript.indexOf("==HOST==") >= 0, "snapshotScript carries the HOST section header")
-assert(Model.snapshotScript.indexOf("==CONTAINERS==") >= 0, "snapshotScript carries the CONTAINERS section header")
-assert(Model.snapshotScript.indexOf("==STATS==") >= 0, "snapshotScript carries the STATS section header")
-assert(Model.snapshotScript.indexOf("docker stats --no-stream") >= 0, "snapshotScript uses non-streaming stats")
+const cutShort = "==DOCKER==\n29.7\n==HOST==\n1024\n==INSPECT==\n==STATS==\n==ERROR==\nDocker did not respond in time.\n"
+assertEqual(Model.parseSnapshot(cutShort).error, "Docker did not respond in time.", "parseSnapshot surfaces helper errors")
+assertEqual(Model.parseSnapshot("==DOCKER==\n29.7\n==ERROR==\n").error, undefined, "parseSnapshot ignores an empty error section")
 
 console.log(`\n${passes} passed, ${failures} failed`)
 process.exit(failures === 0 ? 0 : 1)
