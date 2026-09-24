@@ -24,6 +24,13 @@ Panel {
   property string logsName: ""
   property string logsId: ""
   property string logsText: ""
+  // Merged logs for every container in the open group, one color per container.
+  property bool groupLogsOpen: false
+  property bool groupLogsLive: false
+  property var groupLogLines: []
+  property var groupLogHidden: ({})
+  property string groupLogNote: ""
+  property var logPalette: Model.logPalette("")
   property bool savingPreferences: false
 
   // Match service identity as well as the display name, so aliases keep their icon.
@@ -148,6 +155,98 @@ Panel {
     logsProc.running = true
   }
 
+  function groupLogMembers() {
+    return selectedGroup ? selectedGroup.containers : []
+  }
+
+  function groupLogColor(name) {
+    var names = groupLogMembers().map(function(c) { return c.name })
+    return Model.logColor(logPalette, Math.max(0, names.indexOf(name)))
+  }
+
+  function groupLogLabel(name) {
+    var c = groupLogMembers().find(function(item) { return item.name === name })
+    return (c && c.service) || name
+  }
+
+  function openGroupLogs() {
+    groupLogsOpen = true
+    groupLogLines = []
+    groupLogNote = ""
+    scrollArea.contentItem.contentY = 0
+    showGroupLogs()
+  }
+
+  function closeGroupLogs() {
+    groupLogsOpen = false
+    groupLogsLive = false
+    keyCatcher.forceActiveFocus()
+  }
+
+  // Hidden containers are left out of the fetch, so the line budget goes to
+  // the ones being watched instead of being filled by a chatty neighbour.
+  function showGroupLogs() {
+    if (groupLogsProc.running || !groupLogsOpen) return
+    var shown = groupLogMembers().filter(function(c) {
+      return !groupLogHidden[c.name] && /^[a-f0-9]{12,64}$/.test(c.id)
+    })
+    if (shown.length === 0) {
+      groupLogLines = []
+      groupLogNote = "All containers are hidden. Select one above to show its logs."
+      return
+    }
+    groupLogsProc.members = shown.map(function(c) { return c.name })
+    groupLogsProc.command = root.helperCommand(15, ["grouplogs"].concat(shown.map(function(c) { return c.id })))
+    groupLogsProc.running = true
+  }
+
+  function toggleGroupLogContainer(name) {
+    var next = {}
+    for (var key in groupLogHidden) next[key] = groupLogHidden[key]
+    if (next[name]) delete next[name]
+    else next[name] = true
+    groupLogHidden = next
+    showGroupLogs()
+  }
+
+  FileView {
+    path: Color.currentThemePath + "/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.logPalette = Model.logPalette(text())
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: groupLogsProc
+    property var members: []
+    stdout: StdioCollector { id: groupLogsOut; waitForEnd: true }
+    onExited: function(code, status) {
+      var data = null
+      try { data = JSON.parse(groupLogsOut.text) } catch (e) {}
+      var raw = data && Array.isArray(data.lines) ? data.lines : []
+      var names = members
+      var lines = []
+      raw.forEach(function(entry) {
+        if (!Array.isArray(entry) || typeof entry[0] !== "number" || names[entry[0]] === undefined) return
+        lines.push({ name: names[entry[0]], time: String(entry[1] || ""), text: String(entry[2] || "") })
+      })
+      var follow = groupLogList.count === 0 || groupLogList.atYEnd
+      root.groupLogLines = lines
+      root.groupLogNote = data && typeof data.text === "string" ? data.text :
+          (code ? "Docker logs failed or timed out." : "")
+      if (lines.length === 0 && !root.groupLogNote) root.groupLogNote = "No logs available."
+      if (follow) Qt.callLater(function() { groupLogList.positionViewAtEnd() })
+    }
+  }
+
+  Timer {
+    interval: Math.max(2000, root.refreshMs)
+    running: root.opened && root.groupLogsOpen && root.groupLogsLive
+    repeat: true
+    onTriggered: root.showGroupLogs()
+  }
+
   FileView {
     id: preferencesFile
     path: Quickshell.env("HOME") + "/.config/omarchy/rohirik-docker-monitor.json"
@@ -223,6 +322,8 @@ Panel {
       scrollArea.contentItem.contentY = 0
       editRow = null
       logsName = ""
+      groupLogsOpen = false
+      groupLogsLive = false
     }
   }
 
@@ -235,7 +336,7 @@ Panel {
   })
   readonly property var selectedGroup: groups.find(function(g) { return g.key === selectedGroupKey }) || null
   readonly property bool detailPage: selectedGroupKey !== ""
-  readonly property var rows: containerPage ? (selectedContainer ? [selectedContainer] : []) : (detailPage ? (selectedGroup ? [selectedGroup].concat(selectedGroup.containers) : []) : activeGroups)
+  readonly property var rows: containerPage ? (selectedContainer ? [selectedContainer] : []) : (detailPage ? (selectedGroup ? (groupLogsOpen ? [selectedGroup] : [selectedGroup].concat(selectedGroup.containers)) : []) : activeGroups)
 
   function openGroup(key) {
     selectedGroupKey = key
@@ -248,6 +349,8 @@ Panel {
     expandedContainerId = ""
     editRow = null
     logsName = ""
+    groupLogsOpen = false
+    groupLogsLive = false
     selectedIndex = 0
     cursorActive = false
     notice = ""
@@ -258,6 +361,7 @@ Panel {
   function goBack() {
     if (editRow) { editRow = null; keyCatcher.forceActiveFocus() }
     else if (logsName) { logsName = ""; keyCatcher.forceActiveFocus() }
+    else if (groupLogsOpen) closeGroupLogs()
     else if (manageGroup) manageGroup = false
     else if (expandedContainerId) { expandedContainerId = ""; containerTab = "overview"; scrollArea.contentItem.contentY = 0 }
     else if (detailPage) { selectedGroupKey = ""; resetPage() }
@@ -486,8 +590,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(root.detailPage ? 480 : 380))
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight + fixedHeader.height, Style.space(560))
+    contentWidth: panel.fittedContentWidth(Style.space(root.groupLogsOpen ? 800 : (root.detailPage ? 480 : 380)))
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight + fixedHeader.height, Style.space(root.groupLogsOpen ? 760 : 560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -523,6 +627,7 @@ Panel {
             onClicked: {
               root.editRow = null
               root.logsName = ""
+              root.closeGroupLogs()
               if (root.containerPage) {
                 root.expandedContainerId = ""
                 root.containerTab = "overview"
@@ -994,6 +1099,12 @@ Panel {
                     }
                   }
                   MonitorButton {
+                    visible: root.detailPage && !root.containerPage && containerRow.container.isGroup
+                    text: root.groupLogsOpen ? "Hide group logs" : "Group logs"
+                    tooltipText: "All containers in this group, merged by time"
+                    onClicked: root.groupLogsOpen ? root.closeGroupLogs() : root.openGroupLogs()
+                  }
+                  MonitorButton {
                     visible: root.containerPage
                     text: "View logs"
                     enabled: !logsProc.running
@@ -1132,6 +1243,159 @@ Panel {
                   root.selectedIndex = containerRow.index
                 }
               }
+            }
+          }
+
+          Column {
+            visible: root.groupLogsOpen && root.detailPage && !root.containerPage
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              width: parent.width
+              text: "Group logs · merged by time · newest 400 lines · click a name to hide or show it"
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+              Repeater {
+                model: root.groupLogsOpen ? root.groupLogMembers() : []
+                delegate: Rectangle {
+                  required property var modelData
+                  readonly property bool hidden: !!root.groupLogHidden[modelData.name]
+                  readonly property color tone: root.groupLogColor(modelData.name)
+                  width: chipRow.implicitWidth + Style.space(12)
+                  height: chipRow.implicitHeight + Style.space(6)
+                  radius: height / 2
+                  color: hidden ? "transparent" : Qt.alpha(tone, 0.14)
+                  border.width: 1
+                  border.color: Qt.alpha(tone, hidden ? 0.3 : 0.7)
+                  Row {
+                    id: chipRow
+                    anchors.centerIn: parent
+                    spacing: Style.space(5)
+                    Rectangle {
+                      width: Style.space(7); height: width; radius: width / 2
+                      anchors.verticalCenter: parent.verticalCenter
+                      color: hidden ? "transparent" : tone
+                      border.width: 1
+                      border.color: tone
+                    }
+                    Text {
+                      text: root.groupLogLabel(modelData.name)
+                      textFormat: Text.PlainText
+                      color: hidden ? Qt.darker(root.bar.foreground, 1.8) : tone
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.strikeout: hidden
+                    }
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleGroupLogContainer(modelData.name)
+                  }
+                }
+              }
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(420)
+              color: Qt.alpha(root.bar.foreground, 0.06)
+              ListView {
+                id: groupLogList
+                anchors.fill: parent
+                anchors.margins: Style.space(6)
+                clip: true
+                model: root.groupLogLines
+                spacing: Style.space(2)
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                readonly property real nameWidth: Style.space(110)
+                readonly property real timeWidth: groupLogTimeMetrics.width + Style.space(8)
+                TextMetrics {
+                  id: groupLogTimeMetrics
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: "00:00:00.000"
+                }
+                delegate: Item {
+                  required property var modelData
+                  readonly property color tone: root.groupLogColor(modelData.name)
+                  width: groupLogList.width - Style.space(10)
+                  height: Math.max(lineText.implicitHeight, nameLabel.implicitHeight)
+                  Rectangle {
+                    id: lineMarker
+                    width: Style.space(3)
+                    height: parent.height
+                    color: tone
+                  }
+                  Text {
+                    id: nameLabel
+                    x: lineMarker.width + Style.space(5)
+                    width: groupLogList.nameWidth
+                    text: root.groupLogLabel(modelData.name)
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: tone
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                  Text {
+                    id: timeLabel
+                    x: nameLabel.x + nameLabel.width + Style.space(6)
+                    width: groupLogList.timeWidth
+                    text: modelData.time
+                    textFormat: Text.PlainText
+                    color: Qt.darker(root.bar.foreground, 1.5)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Text {
+                    id: lineText
+                    x: timeLabel.x + timeLabel.width
+                    width: parent.width - x
+                    text: modelData.text
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+            }
+            Text {
+              visible: root.groupLogNote !== ""
+              width: parent.width
+              text: root.groupLogNote
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Row {
+              spacing: Style.space(8)
+              MonitorButton {
+                text: groupLogsProc.running && !root.groupLogsLive ? "Loading…" : "Refresh"
+                enabled: !groupLogsProc.running
+                onClicked: root.showGroupLogs()
+              }
+              MonitorButton {
+                text: root.groupLogsLive ? "● Live" : "○ Live"
+                tooltipText: root.groupLogsLive ? "Stop following new lines" : "Refresh automatically and follow new lines"
+                onClicked: {
+                  root.groupLogsLive = !root.groupLogsLive
+                  if (root.groupLogsLive) groupLogList.positionViewAtEnd()
+                }
+              }
+              MonitorButton { text: "Close logs"; onClicked: root.closeGroupLogs() }
             }
           }
 

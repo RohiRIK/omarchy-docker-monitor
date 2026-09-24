@@ -11,6 +11,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Group overview with resource history, service links, and compact container rows.
 - Separate container Overview and Settings pages.
 - Internal IPv4/IPv6 addresses labeled by Docker network.
+- Group logs: every container in a group merged by time, color-coded per container with the theme palette, with per-container filtering and a live follow mode.
 - Recent logs, start/stop/restart controls, custom group names, and URL overrides.
 - RAM limits in Settings; the rest of the interface stays focused on monitoring.
 
@@ -18,7 +19,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 <tr><td><img src="docs/group.png" alt="Group overview with demo data"></td><td><img src="docs/container.png" alt="Container overview and internal IP with demo data"></td></tr>
 </table>
 
-[View Settings](docs/settings.png). Screenshots render the actual QML interface with synthetic service names, metrics, and addresses.
+[View Settings](docs/settings.png) · [View group logs](docs/logs.png). Screenshots render the actual QML interface with synthetic service names, metrics, and addresses.
 
 ## Requirements
 
@@ -52,7 +53,7 @@ omarchy plugin disable devgtv.docker
 Click the Docker icon → select a group → select a container.
 
 - **Groups:** only groups with a running, restarting, or paused container appear. A stopped group stays on its open detail page, so it can be started again before navigating away.
-- **Group overview:** graphs, service links, and member containers. The `⋯` menu contains lifecycle actions and rename.
+- **Group overview:** graphs, service links, and member containers. **Group logs** merges the newest lines of every member (400 lines in total) into one timeline. Click a container's name to hide or show it; hidden containers are not fetched, so the line budget goes to the rest. **Live** refreshes every refresh interval (minimum 2 s) and follows new lines while you are scrolled to the bottom. The `⋯` menu contains lifecycle actions and rename.
 - **Container Overview:** resource history, network addresses, service access, and recent logs.
 - **Container Settings:** group assignment, URL override, and RAM limit.
 - **Back:** returns one page. Escape first closes an editor or log view, then goes back.
