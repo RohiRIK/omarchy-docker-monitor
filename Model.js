@@ -281,6 +281,30 @@ function addHistory(previous, containers, preferences, now) {
   return next
 }
 
+// Distinct per-container colors for merged group logs, taken from the theme's
+// colors.toml so they suit its background. Red is last: it reads as an error.
+var LOG_COLOR_KEYS = ["cyan", "green", "yellow", "magenta", "blue", "orange",
+  "bright_cyan", "bright_green", "bright_yellow", "bright_magenta", "bright_blue", "red", "bright_red"]
+var LOG_COLOR_FALLBACK = ["#56b6c2", "#98c379", "#e5c07b", "#c678dd", "#61afef", "#d19a66", "#e06c75"]
+
+function logPalette(colorsToml) {
+  var values = {}
+  String(colorsToml || "").split("\n").forEach(function(line) {
+    var match = /^\s*([a-z_]+)\s*=\s*"(#[0-9a-fA-F]{6})"/.exec(line)
+    if (match) values[match[1]] = match[2].toLowerCase()
+  })
+  var palette = []
+  LOG_COLOR_KEYS.forEach(function(key) {
+    var color = values[key]
+    if (color && palette.indexOf(color) < 0 && color !== values.background && color !== values.foreground) palette.push(color)
+  })
+  return palette.length >= 4 ? palette : LOG_COLOR_FALLBACK.slice()
+}
+
+function logColor(palette, index) {
+  return palette[((index % palette.length) + palette.length) % palette.length]
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     safeUrl: safeUrl,
@@ -296,6 +320,8 @@ if (typeof module !== "undefined") {
     formatBytes: formatBytes,
     formatMb: formatMb,
     clampMemMb: clampMemMb,
-    parseSnapshot: parseSnapshot
+    parseSnapshot: parseSnapshot,
+    logPalette: logPalette,
+    logColor: logColor
   }
 }

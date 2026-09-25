@@ -56,6 +56,13 @@ out=$(helper normal logs aaaaaaaaaaaa)
 check '[[ $(node -e "console.log(JSON.parse(process.argv[1]).text)" "$out") == $'"'"'2026-01-01T00:00:01Z err\n2026-01-01T00:00:02Z out'"'"' ]]' \
   "logs merge stdout and stderr by timestamp"
 
+out=$(helper normal grouplogs aaaaaaaaaaaa bbbbbbbbbbbb)
+check '[[ $(node -e "const d=JSON.parse(process.argv[1]); console.log(d.lines.length, d.lines.map(l => l[0] + l[2]).join(\",\"))" "$out") == "4 0err,1err,0out,1out" ]]' \
+  "group logs merge containers by timestamp and tag each line"
+
+out=$(helper normal grouplogs 'bad id')
+check '[[ $out == *"Invalid container ids"* ]]' "group logs reject invalid ids"
+
 start=$SECONDS
 out=$(helper hugeline logs aaaaaaaaaaaa)
 check '(( SECONDS - start <= 12 ))' "an oversized log line stops at the read limit"

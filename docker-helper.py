@@ -9,11 +9,16 @@ self-describing:
 
   snapshot                  sectioned text for Model.parseSnapshot
   logs <id>                 JSON {"code", "text"} with the newest log lines
+  grouplogs <id>...         JSON {"code", "text", "lines"}: several containers'
+                            logs merged by timestamp, each line tagged with the
+                            index of its container argument
   action <verb> <id>...     JSON {"code", "text"}; verb is start/stop/restart
   memory <name> <mb>        JSON {"code", "text"} for docker update --memory
 """
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import re
 import selectors
 import signal
@@ -35,6 +40,9 @@ LOG_READ_LIMIT = 8 * MIB    # bytes read per log stream before stopping
 LOG_KEEP = 60000            # newest characters shown
 LOG_LINES = 200
 LOG_LINE_CHARS = 2000
+GROUP_LOG_CONTAINERS = 32
+GROUP_LOG_LINES = 400       # newest merged lines returned for a group
+GROUP_LOG_READ_LIMIT = 2 * MIB  # bytes read per stream per container
 
 ID_RE = re.compile(r"^[a-f0-9]{12,64}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
@@ -264,6 +272,63 @@ def logs(container_id):
     emit(0 if result.ok else 1, "\n".join(notes + [text or "No logs available."]))
 
 
+TIMESTAMP_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z (.*)$")
+
+
+def split_timestamp(line):
+    """Returns (sort key, local HH:MM:SS.mmm, message) for a --timestamps line.
+
+    Docker trims trailing zeros from the fraction, so it is padded before
+    sorting; plain string order would misplace e.g. .5 against .45.
+    """
+    match = TIMESTAMP_RE.match(line)
+    if not match:
+        return ("", "", line)
+    base, fraction, message = match.group(1), match.group(2) or "", match.group(3)
+    fraction = fraction.ljust(9, "0")
+    try:
+        local = datetime.fromisoformat(base + "+00:00").astimezone()
+        shown = local.strftime("%H:%M:%S") + "." + fraction[:3]
+    except ValueError:
+        shown = ""
+    return (base + "." + fraction, shown, message)
+
+
+def group_logs(ids):
+    if not ids or len(ids) > GROUP_LOG_CONTAINERS or not all(ID_RE.match(i) for i in ids):
+        return emit(2, "Invalid container ids.")
+    deadline = Deadline(LOGS_DEADLINE)
+
+    def fetch(container_id):
+        return run(["docker", "logs", "--tail", str(LOG_LINES), "--timestamps", "--", container_id],
+                   deadline, (GROUP_LOG_READ_LIMIT, GROUP_LOG_READ_LIMIT), tail=True)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(ids))) as pool:
+        results = list(pool.map(fetch, ids))
+
+    entries = []
+    for index, result in enumerate(results):
+        for line in clean_log_lines(result.stdout) + clean_log_lines(result.stderr):
+            key, shown, message = split_timestamp(line)
+            entries.append((key, index, shown, message))
+    # Stable sort keeps each container's own order for identical timestamps.
+    entries.sort(key=lambda e: e[0])
+    entries = entries[-GROUP_LOG_LINES:]
+
+    notes = []
+    if any(r.timed_out for r in results):
+        notes.append("Some container logs timed out; showing what was read.")
+    if any(r.over_limit for r in results):
+        notes.append("Some logs exceeded %d MiB; showing the newest part read." % (GROUP_LOG_READ_LIMIT // MIB))
+    failed = [ids[i][:12] for i, r in enumerate(results)
+              if r.code not in (0, None) and not (r.timed_out or r.over_limit)]
+    if failed:
+        notes.append("Docker logs failed for " + ", ".join(failed))
+    ok = all(r.ok for r in results)
+    sys.stdout.write(json.dumps({"code": 0 if ok else 1, "text": "\n".join(notes),
+                                 "lines": [[e[1], e[2], e[3]] for e in entries]}) + "\n")
+
+
 def command(argv, deadline_seconds):
     result = run(argv, Deadline(deadline_seconds), (SMALL_LIMIT, SMALL_LIMIT))
     if result.ok:
@@ -296,12 +361,14 @@ def main(argv):
         snapshot()
     elif argv[:1] == ["logs"] and len(argv) == 2:
         logs(argv[1])
+    elif argv[:1] == ["grouplogs"] and len(argv) >= 2:
+        group_logs(argv[1:])
     elif argv[:1] == ["action"] and len(argv) >= 3:
         action(argv[1], argv[2:])
     elif argv[:1] == ["memory"] and len(argv) == 3:
         memory(argv[1], argv[2])
     else:
-        emit(2, "Usage: docker-helper.py snapshot | logs <id> | action <verb> <id>... | memory <name> <mb>")
+        emit(2, "Usage: docker-helper.py snapshot | logs <id> | grouplogs <id>... | action <verb> <id>... | memory <name> <mb>")
 
 
 if __name__ == "__main__":

@@ -73,8 +73,19 @@ for project, service, image, cpu, mem, ip in [
         urls=[f"https://{project}.example.com"] if service in ["hub", "app", "proxy"] else [],
         internalAddresses=[dict(network=f"{project}_default", address=ip)]))
 demo = json.dumps(containers)
+demo_logs = [dict(name="infisical-" + service + "-1", time="14:02:%06.3f" % (7 + i * 0.137), text=text)
+             for i, (service, text) in enumerate([
+    ("app", "POST /api/v1/auth/login 200 12ms"),
+    ("postgres", "LOG:  statement: SELECT id, email FROM users WHERE email = $1"),
+    ("app", "issued session token for user 4821"),
+    ("app", "GET /api/v3/secrets/raw?environment=prod 200 31ms"),
+    ("postgres", "LOG:  statement: SELECT * FROM secrets WHERE workspace_id = $1"),
+    ("app", "audit: secrets.read workspace=prod-api count=14"),
+    ("postgres", "LOG:  checkpoint complete: wrote 42 buffers (0.3%)"),
+    ("app", "POST /api/v1/secrets/batch 201 48ms"),
+])]
 adapter = (work / "Ui" / "KeyboardPanel.qml").read_text()
-for view in ["groups", "group", "container", "settings"]:
+for view in ["groups", "group", "container", "settings", "logs"]:
     out = ROOT / "docs" / (view + ".png")
     out.unlink(missing_ok=True)
     (work / "Ui" / "KeyboardPanel.qml").write_text(adapter.replace("OUTPUT", str(out)))
@@ -83,6 +94,9 @@ for view in ["groups", "group", "container", "settings"]:
         selection += 'plugin.openGroup("project:infisical");'
     if view in ["container", "settings"]:
         selection += 'plugin.activateRow(plugin.containers[1]);'
+    if view == "logs":
+        selection += ('plugin.groupLogsOpen = true; plugin.groupLogHidden = {"infisical-redis-1": true};'
+                      'plugin.groupLogLines = ' + json.dumps(demo_logs) + ';')
     if view == "settings":
         selection += 'plugin.containerTab = "settings"; plugin.openEditor(plugin.selectedContainer);'
     (work / "shell.qml").write_text("""

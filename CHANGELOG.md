@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Group logs: merge every container's logs in a group into one timeline, color-coded per container from the theme's palette, with click-to-hide filtering and a live follow mode. Fetched in parallel through `docker-helper.py grouplogs` under the same deadline and per-stream limits.
+
 ## 0.1.1
 
 Security hardening from marketplace review.
