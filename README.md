@@ -13,7 +13,8 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Internal IPv4/IPv6 addresses labeled by Docker network.
 - Group logs: every container in a group merged by time, color-coded per container with the theme palette, with per-container filtering and a live follow mode.
 - Ask agent: open your default Omarchy agent with a question about what a group or container is for. Details go only to the agent you chose; the prompt tells it to use read-only Docker commands.
-- Recent logs, start/stop/restart controls, custom group names, and URL overrides.
+- Start, stop, and restart from the ⋯ menu or a container's Settings page.
+- Recent logs, custom group names, and URL overrides.
 - RAM limits in Settings; the rest of the interface stays focused on monitoring.
 
 <table>

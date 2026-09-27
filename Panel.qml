@@ -1173,6 +1173,31 @@ Panel {
                   width: parent.width
                 }
 
+                // Lifecycle controls, same helper path as the ⋯ menu
+                Text {
+                  textFormat: Text.PlainText
+                  visible: root.containerPage && root.containerTab === "settings"
+                  text: "POWER"
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.2
+                }
+                Row {
+                  visible: root.containerPage && root.containerTab === "settings"
+                  spacing: Style.space(6)
+                  Repeater {
+                    model: [["start", "Start"], ["stop", "Stop"], ["restart", "Restart"]]
+                    delegate: MonitorButton {
+                      required property var modelData
+                      text: modelData[1]
+                      enabled: !actionProc.running && Model.actionCommand(modelData[0], containerRow.container).length > 0
+                      onClicked: root.runAction(modelData[0], containerRow.container)
+                    }
+                  }
+                }
+
                 // Row 3: RAM limit header
                 Item {
                   visible: root.containerPage && root.containerTab === "settings"

@@ -3,6 +3,7 @@
 ## 0.3.0
 
 - Ask agent: a button on group and container pages opens your default Omarchy agent (`omarchy agent prompt`) asking what that software is for. The prompt carries names, images, status, and URLs, and tells the agent to use only read-only Docker commands.
+- Power controls: Start, Stop, and Restart buttons on each container's Settings page, next to the RAM limit. They run through `docker-helper.py` like the ⋯ menu actions, and each button is enabled only when that action applies to the container's current state.
 
 ## 0.2.0
 
