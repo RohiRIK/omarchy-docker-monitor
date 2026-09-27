@@ -1173,27 +1173,50 @@ Panel {
                   width: parent.width
                 }
 
-                // Lifecycle controls, same helper path as the ⋯ menu
-                Text {
-                  textFormat: Text.PlainText
+                // Power row: same helper path as the ⋯ menu, laid out like RAM LIMIT
+                Item {
                   visible: root.containerPage && root.containerTab === "settings"
-                  text: "POWER"
-                  color: Qt.darker(root.bar.foreground, 1.4)
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  font.letterSpacing: 1.2
-                }
-                Row {
-                  visible: root.containerPage && root.containerTab === "settings"
-                  spacing: Style.space(6)
-                  Repeater {
-                    model: [["start", "Start"], ["stop", "Stop"], ["restart", "Restart"]]
-                    delegate: MonitorButton {
-                      required property var modelData
-                      text: modelData[1]
-                      enabled: !actionProc.running && Model.actionCommand(modelData[0], containerRow.container).length > 0
-                      onClicked: root.runAction(modelData[0], containerRow.container)
+                  width: parent.width
+                  implicitHeight: Math.max(runningHeader.implicitHeight, restartButton.implicitHeight)
+
+                  Text {
+                    id: runningHeader
+                    textFormat: Text.PlainText
+                    text: "RUNNING"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1.2
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Row {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(10)
+
+                    MonitorButton {
+                      id: restartButton
+                      anchors.verticalCenter: parent.verticalCenter
+                      bordered: false
+                      text: "↻ Restart"
+                      tooltipText: "Restart this container"
+                      enabled: !actionProc.running && Model.actionCommand("restart", containerRow.container).length > 0
+                      onClicked: root.runAction("restart", containerRow.container)
+                    }
+
+                    ToggleSwitch {
+                      readonly property bool up: ["running", "restarting"].indexOf(containerRow.container.status) >= 0
+                      anchors.verticalCenter: parent.verticalCenter
+                      trackHeight: Math.round(runningHeader.font.pixelSize * 1.2)
+                      cursorPad: Style.space(3)
+                      checked: up
+                      busy: actionProc.running
+                      enabled: Model.actionCommand(up ? "stop" : "start", containerRow.container).length > 0
+                      foreground: root.bar.foreground
+                      onToggled: root.runAction(up ? "stop" : "start", containerRow.container)
                     }
                   }
                 }
