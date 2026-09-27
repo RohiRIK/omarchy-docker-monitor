@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Ask agent: a button on group and container pages opens your default Omarchy agent (`omarchy agent prompt`) asking what that software is for. The prompt carries names, images, status, and URLs, and tells the agent to use only read-only Docker commands.
+
 ## 0.2.0
 
 - Group logs: merge every container's logs in a group into one timeline, color-coded per container from the theme's palette, with click-to-hide filtering and a live follow mode. Fetched in parallel through `docker-helper.py grouplogs` under the same deadline and per-stream limits.

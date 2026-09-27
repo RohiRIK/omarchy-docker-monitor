@@ -146,6 +146,14 @@ Panel {
     actionProc.running = true
   }
 
+  // Opens the user's default agent (omarchy agent prompt) in its own terminal.
+  function askAgent(row) {
+    var prompt = Model.agentPrompt(row, root.urlsFor(row))
+    if (!prompt) return
+    Quickshell.execDetached(["omarchy-agent-prompt", prompt])
+    root.close()
+  }
+
   function showLogs(c) {
     if (logsProc.running) return
     logsName = c.name
@@ -1109,6 +1117,13 @@ Panel {
                     text: "View logs"
                     enabled: !logsProc.running
                     onClicked: root.showLogs(containerRow.container)
+                  }
+                  MonitorButton {
+                    visible: root.detailPage && (containerRow.container.isGroup || root.containerPage)
+                    text: "Ask agent"
+                    tooltipText: containerRow.container.isGroup ? "Ask your default agent what this group is for"
+                                                                : "Ask your default agent what this container is for"
+                    onClicked: root.askAgent(containerRow.container)
                   }
                 }
 

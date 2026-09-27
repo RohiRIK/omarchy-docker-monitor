@@ -268,6 +268,32 @@ function actionCommand(action, row) {
   return ids.length ? ["docker", action].concat(ids) : []
 }
 
+// Builds the question handed to the user's default agent. Only ids that pass
+// the same check as actionCommand are offered as docker arguments.
+function agentPrompt(row, urls) {
+  if (!row) return ""
+  var members = row.isGroup ? row.containers : [row]
+  var ids = members.map(function(c) { return c.id }).filter(function(id) { return /^[a-f0-9]{12,64}$/.test(id) })
+  var lines = members.map(function(c) {
+    var parts = [c.image || "unknown image", healthText(c)]
+    if (c.service) parts.unshift("service " + c.service)
+    return "- " + c.name + " (" + parts.join(", ") + ")"
+  })
+  urls = urls || row.urls || []
+  var subject = row.isGroup
+    ? "the Docker group \"" + row.name + "\" (" + members.length + " container" + (members.length === 1 ? "" : "s") + ")"
+    : "the Docker container \"" + row.name + "\"" + (row.project ? " from compose project \"" + row.project + "\"" : "")
+  var text = "What is " + subject + " on my machine for?\n\n" + lines.join("\n")
+  if (urls.length) text += "\nURLs: " + urls.join(", ")
+  text += "\n\nExplain what this software is, what it is likely doing here" +
+          (row.isGroup ? ", how the containers relate to each other" : "") +
+          ", and anything that looks off."
+  if (ids.length)
+    text += " You may look with read-only commands such as `docker inspect " + ids.join(" ") +
+            "` and `docker logs --tail 100 <id>`."
+  return text + " Do not start, stop, restart, remove, exec into or change any container."
+}
+
 function addHistory(previous, containers, preferences, now) {
   var next = {}
   containers.concat(groupContainers(containers, preferences)).forEach(function(c) {
@@ -313,6 +339,7 @@ if (typeof module !== "undefined") {
     healthText: healthText,
     needsAttention: needsAttention,
     actionCommand: actionCommand,
+    agentPrompt: agentPrompt,
     addHistory: addHistory,
     groupContainers: groupContainers,
     visibleRows: visibleRows,

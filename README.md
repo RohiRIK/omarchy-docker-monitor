@@ -12,6 +12,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Separate container Overview and Settings pages.
 - Internal IPv4/IPv6 addresses labeled by Docker network.
 - Group logs: every container in a group merged by time, color-coded per container with the theme palette, with per-container filtering and a live follow mode.
+- Ask agent: open your default Omarchy agent with a question about what a group or container is for. Details go only to the agent you chose; the prompt tells it to use read-only Docker commands.
 - Recent logs, start/stop/restart controls, custom group names, and URL overrides.
 - RAM limits in Settings; the rest of the interface stays focused on monitoring.
 
@@ -27,6 +28,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Docker CLI and access to the Docker daemon from your desktop session.
 - Python 3 and GNU coreutils (`timeout`).
 - Linux /proc for local host CPU and memory metrics.
+- Optional: a default agent set with `omarchy default agent <name>`, for Ask agent.
 
 No extra Python packages, background service, or telemetry. Service links open in your browser only when clicked. The widget uses the Docker context/environment inherited by the shell; host metrics always describe the local Linux machine. Prefer a local Docker context when comparing host and container metrics.
 
