@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Available projects: the home page lists Compose projects that are not running, found under `projectDirs` (default `~`) or known to Docker, with a Start button that runs `docker compose up -d`. Uses the new `docker-helper.py projects` and `up` commands, with a bounded folder search and a 10-minute start deadline.
+
 ## 0.3.0
 
 - Ask agent: a button on group and container pages opens your default Omarchy agent (`omarchy agent prompt`) asking what that software is for. The prompt carries names, images, status, and URLs, and tells the agent to use only read-only Docker commands.

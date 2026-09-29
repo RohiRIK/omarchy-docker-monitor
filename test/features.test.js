@@ -54,3 +54,16 @@ assert.match(askGroup, /the Docker group "app" \(2 containers\)/)
 assert.match(askGroup, /how the containers relate/)
 assert.doesNotMatch(M.agentPrompt({...web, id: "--help"}), /docker inspect/)
 assert.equal(M.agentPrompt(null), "")
+
+const projects = [
+  { name: "app", files: ["/p/app/compose.yaml"], dir: "/p/app", status: "running(2)", services: ["web", "db"] },
+  { name: "idle", files: ["/home/u/idle/compose.yaml"], dir: "/home/u/idle", status: "exited(1)", services: ["api"] },
+  { name: "gone", files: ["/x/compose.yaml"], dir: "/x", status: "", services: [], available: false },
+  { name: "bad" }
+]
+assert.deepEqual(M.availableProjects(projects, [web, db]).map(p => p.name), ["idle", "gone"])
+assert.deepEqual(M.availableProjects(projects, [stopped]).map(p => p.name), ["app", "idle", "gone"])
+const [idle, gone] = M.availableProjects(projects, [web])
+assert.equal(M.projectSummary(idle, "/home/u"), "1 service · stopped · ~/idle")
+assert.equal(M.projectSummary(gone, "/home/u"), "file missing · /x")
+
