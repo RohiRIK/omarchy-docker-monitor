@@ -307,6 +307,32 @@ function addHistory(previous, containers, preferences, now) {
   return next
 }
 
+// Compose projects with no running, restarting or paused container, i.e. the
+// ones worth offering a Start button for.
+function availableProjects(projects, containers) {
+  var active = {}
+  ;(containers || []).forEach(function(c) {
+    if (c.project && ["running", "restarting", "paused"].indexOf(c.status) >= 0) active[c.project] = true
+  })
+  return (projects || []).filter(function(p) {
+    return p && typeof p.name === "string" && Array.isArray(p.files) && p.files.length && !active[p.name]
+  }).map(function(p) {
+    return { name: p.name, files: p.files.map(String), dir: String(p.dir || ""), status: String(p.status || ""),
+             services: Array.isArray(p.services) ? p.services.map(String) : [], available: p.available !== false }
+  })
+}
+
+function projectSummary(project, home) {
+  var dir = project.dir
+  if (home && (dir === home || dir.indexOf(home + "/") === 0)) dir = "~" + dir.slice(home.length)
+  var parts = []
+  if (project.services.length) parts.push(project.services.length + (project.services.length === 1 ? " service" : " services"))
+  if (/^exited|^created/.test(project.status)) parts.push("stopped")
+  if (!project.available) parts.push("file missing")
+  parts.push(dir)
+  return parts.join(" · ")
+}
+
 // Distinct per-container colors for merged group logs, taken from the theme's
 // colors.toml so they suit its background. Red is last: it reads as an error.
 var LOG_COLOR_KEYS = ["cyan", "green", "yellow", "magenta", "blue", "orange",
@@ -349,6 +375,8 @@ if (typeof module !== "undefined") {
     clampMemMb: clampMemMb,
     parseSnapshot: parseSnapshot,
     logPalette: logPalette,
+    availableProjects: availableProjects,
+    projectSummary: projectSummary,
     logColor: logColor
   }
 }

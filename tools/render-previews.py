@@ -54,6 +54,7 @@ p = work / "Plugin" / "Panel.qml"
 s = p.read_text().replace('running: root.opened', 'running: false')
 s = s.replace('Component.onCompleted: refresh()', 'Component.onCompleted: {}')
 s = s.replace('if (!refreshProc.running) refreshProc.running = true', 'return')
+s = s.replace('if (projectsProc.running) return', 'return')
 s = s.replace('path: Quickshell.env("HOME") + "/.config/omarchy/rohirik-docker-monitor.json"', 'path: "/dev/null"')
 s = s.replace('ipcTarget: "rohirik.docker-monitor"', 'ipcTarget: ""')
 p.write_text(s)
@@ -73,6 +74,14 @@ for project, service, image, cpu, mem, ip in [
         urls=[f"https://{project}.example.com"] if service in ["hub", "app", "proxy"] else [],
         internalAddresses=[dict(network=f"{project}_default", address=ip)]))
 demo = json.dumps(containers)
+demo_projects = [
+    dict(name="infisical", files=["/home/demo/infra/infisical/compose.yaml"], dir="/home/demo/infra/infisical",
+         status="exited(3)", services=["app", "postgres", "redis"]),
+    dict(name="n8n", files=["/home/demo/infra/n8n/compose.yaml"], dir="/home/demo/infra/n8n",
+         status="", services=["app"]),
+    dict(name="shop-api", files=["/home/demo/work/shop/docker-compose.yml"], dir="/home/demo/work/shop",
+         status="", services=["api", "worker", "postgres", "mailpit"]),
+]
 demo_logs = [dict(name="infisical-" + service + "-1", time="14:02:%06.3f" % (7 + i * 0.137), text=text)
              for i, (service, text) in enumerate([
     ("app", "POST /api/v1/auth/login 200 12ms"),
@@ -85,18 +94,21 @@ demo_logs = [dict(name="infisical-" + service + "-1", time="14:02:%06.3f" % (7 +
     ("app", "POST /api/v1/secrets/batch 201 48ms"),
 ])]
 adapter = (work / "Ui" / "KeyboardPanel.qml").read_text()
-for view in ["groups", "group", "container", "settings", "logs"]:
+for view in ["groups", "group", "container", "settings", "logs", "available"]:
     out = ROOT / "docs" / (view + ".png")
     out.unlink(missing_ok=True)
     (work / "Ui" / "KeyboardPanel.qml").write_text(adapter.replace("OUTPUT", str(out)))
     selection = ''
-    if view != "groups":
+    if view not in ["groups", "available"]:
         selection += 'plugin.openGroup("project:infisical");'
     if view in ["container", "settings"]:
         selection += 'plugin.activateRow(plugin.containers[1]);'
     if view == "logs":
         selection += ('plugin.groupLogsOpen = true; plugin.groupLogHidden = {"infisical-redis-1": true};'
                       'plugin.groupLogLines = ' + json.dumps(demo_logs) + ';')
+    if view == "available":
+        selection += ('plugin.containers = [];'
+                      'plugin.projects = ' + json.dumps(demo_projects) + ';')
     if view == "settings":
         selection += 'plugin.containerTab = "settings"; plugin.openEditor(plugin.selectedContainer);'
     (work / "shell.qml").write_text("""

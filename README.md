@@ -11,6 +11,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Group overview with resource history, service links, and compact container rows.
 - Separate container Overview and Settings pages.
 - Internal IPv4/IPv6 addresses labeled by Docker network.
+- Available projects: Compose projects found in your folders, or known to Docker, that are not running, each with a Start button.
 - Group logs: every container in a group merged by time, color-coded per container with the theme palette, with per-container filtering and a live follow mode.
 - Ask agent: open your default Omarchy agent with a question about what a group or container is for. Details go only to the agent you chose; the prompt tells it to use read-only Docker commands.
 - Start, stop, and restart from the ⋯ menu, or with the Running switch on a container's Settings page.
@@ -21,7 +22,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 <tr><td><img src="docs/group.png" alt="Group overview with demo data"></td><td><img src="docs/container.png" alt="Container overview and internal IP with demo data"></td></tr>
 </table>
 
-[View Settings](docs/settings.png) · [View group logs](docs/logs.png). Screenshots render the actual QML interface with synthetic service names, metrics, and addresses.
+[View Settings](docs/settings.png) · [View group logs](docs/logs.png) · [View available projects](docs/available.png). Screenshots render the actual QML interface with synthetic service names, metrics, and addresses.
 
 ## Requirements
 
@@ -56,6 +57,7 @@ omarchy plugin disable devgtv.docker
 Click the Docker icon → select a group → select a container.
 
 - **Groups:** only groups with a running, restarting, or paused container appear. A stopped group stays on its open detail page, so it can be started again before navigating away.
+- **Available:** below the active groups, every Compose project that is not running, with its service count and folder. **Start** runs `docker compose up -d` for its Compose file(s); the first start may take a while if images must be pulled or built. Projects come from `docker compose ls --all` and from Compose files found under `projectDirs`.
 - **Group overview:** graphs, service links, and member containers. **Group logs** merges the newest lines of every member (400 lines in total) into one timeline. Click a container's name to hide or show it; hidden containers are not fetched, so the line budget goes to the rest. **Live** refreshes every refresh interval (minimum 2 s) and follows new lines while you are scrolled to the bottom. The `⋯` menu contains lifecycle actions and rename.
 - **Container Overview:** resource history, network addresses, service access, and recent logs.
 - **Container Settings:** group assignment, URL override, and RAM limit.
@@ -82,6 +84,17 @@ Set the refresh interval on the widget's entry in `~/.config/omarchy/shell.json`
 ```
 
 The minimum is 500 ms. The default is 3000 ms.
+
+Choose where to look for Compose projects with `projectDirs` (default: your home folder):
+
+```json
+{
+  "id": "rohirik.docker-monitor",
+  "projectDirs": ["~/Documents", "~/code"]
+}
+```
+
+Each folder is searched four levels deep for `compose.yaml`, `compose.yml`, `docker-compose.yaml` or `docker-compose.yml`, skipping hidden folders and dependency folders such as `node_modules`, `vendor` and `venv`. The search stops after 100 projects, 20,000 folders or 8 seconds. A folder with only a Dockerfile is not listed: it does not say how to run the image.
 
 Custom names, assignments, and URLs are stored in `~/.config/omarchy/rohirik-docker-monitor.json`. The plugin creates this file only when you save settings. It does not import or overwrite the original widget's preferences.
 

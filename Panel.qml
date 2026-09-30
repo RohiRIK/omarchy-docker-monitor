@@ -31,6 +31,17 @@ Panel {
   property var groupLogHidden: ({})
   property string groupLogNote: ""
   property var logPalette: Model.logPalette("")
+  // Compose projects that can be started: found under projectDirs, plus the
+  // ones Docker has containers for. Only inactive ones are listed.
+  property var projects: []
+  property string startingProject: ""
+  readonly property var projectDirs: {
+    var dirs = setting("projectDirs", ["~"])
+    return (Array.isArray(dirs) ? dirs : [dirs]).map(function(d) {
+      return String(d).replace(/^~(?=\/|$)/, Quickshell.env("HOME"))
+    })
+  }
+  readonly property var availableProjects: Model.availableProjects(projects, containers)
   property bool savingPreferences: false
 
   // Match service identity as well as the display name, so aliases keep their icon.
@@ -296,6 +307,7 @@ Panel {
       root.notice = failed ? "Failed: " + label + "\n" + (result.text || "Command timed out or failed.") :
           "Completed: " + label
       root.refresh()
+      root.refreshProjects()
     }
   }
 
@@ -518,11 +530,52 @@ Panel {
 
   Component.onCompleted: refresh()
 
+  function refreshProjects() {
+    if (projectsProc.running) return
+    projectsProc.command = root.helperCommand(12, ["projects"].concat(projectDirs))
+    projectsProc.running = true
+  }
+
+  function startProject(project) {
+    if (startProc.running || !project || !project.available) return
+    startingProject = project.name
+    noticeError = false
+    notice = "Starting " + project.name + "…"
+    startProc.command = root.helperCommand(615, ["up"].concat(project.files))
+    startProc.running = true
+  }
+
+  Process {
+    id: projectsProc
+    stdout: StdioCollector { id: projectsOut; waitForEnd: true }
+    onExited: function(code, status) {
+      var data = null
+      try { data = JSON.parse(projectsOut.text) } catch (e) {}
+      if (data && Array.isArray(data.projects)) root.projects = data.projects
+    }
+  }
+
+  Process {
+    id: startProc
+    stdout: StdioCollector { id: startOut; waitForEnd: true }
+    onExited: function(code, status) {
+      var result = root.helperResult(startOut.text)
+      var failed = code !== 0 || result.code !== 0
+      root.noticeError = failed
+      root.notice = failed ? "Could not start " + root.startingProject + "\n" + (result.text || "docker compose up failed or timed out.") :
+          "Started " + root.startingProject
+      root.startingProject = ""
+      root.refresh()
+      root.refreshProjects()
+    }
+  }
+
   onOpenedChanged: {
     if (opened) {
       selectedGroupKey = ""
       resetPage()
       refresh()
+      refreshProjects()
       selectedIndex = 0
       cursorActive = false
     }
@@ -791,7 +844,11 @@ Panel {
             textFormat: Text.PlainText
             visible: root.dockerAvailable && root.rows.length === 0
             width: parent.width
-            text: root.detailPage ? "This group is no longer available." : "No active Docker groups"
+            text: root.detailPage ? "This group is no longer available." :
+                (root.availableProjects.length ? "Nothing running" : "No active Docker groups. Set projectDirs to find Compose projects to start.")
+            wrapMode: Text.WordWrap
+            leftPadding: root.detailPage ? 0 : Style.space(10)
+            rightPadding: leftPadding
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.body
@@ -1304,6 +1361,71 @@ Panel {
                 onHoveredChanged: if (hovered) {
                   root.cursorActive = true
                   root.selectedIndex = containerRow.index
+                }
+              }
+            }
+          }
+
+          // ---------- Available Compose projects ----------
+          Column {
+            visible: !root.detailPage && root.availableProjects.length > 0
+            width: parent.width
+            spacing: Style.space(4)
+            topPadding: Style.space(root.activeGroups.length ? 8 : 0)
+            Text {
+              leftPadding: Style.space(10)
+              text: "Available"
+              textFormat: Text.PlainText
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Repeater {
+              model: root.availableProjects
+              delegate: Item {
+                id: projectRow
+                required property var modelData
+                width: parent.width
+                implicitHeight: projectInfo.implicitHeight + Style.space(12)
+                Column {
+                  id: projectInfo
+                  anchors.left: parent.left
+                  anchors.right: startButton.left
+                  anchors.leftMargin: Style.space(10)
+                  anchors.rightMargin: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(2)
+                  Text {
+                    width: parent.width
+                    text: root.serviceIcon({ key: "project:" + modelData.name, name: modelData.name,
+                                             containers: modelData.services.map(function(s) { return { service: s } }) }) +
+                          "  " + modelData.name
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Qt.darker(root.bar.foreground, 1.15)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+                  Text {
+                    width: parent.width
+                    text: Model.projectSummary(modelData, Quickshell.env("HOME"))
+                    textFormat: Text.PlainText
+                    elide: Text.ElideMiddle
+                    color: Qt.darker(root.bar.foreground, 1.5)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+                MonitorButton {
+                  id: startButton
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.startingProject === modelData.name ? "Starting…" : "Start"
+                  tooltipText: modelData.available ? "docker compose up -d · " + modelData.files.join(", ") :
+                      "Compose file is missing: " + modelData.files.join(", ")
+                  enabled: modelData.available && !startProc.running
+                  onClicked: root.startProject(modelData)
                 }
               }
             }

@@ -14,6 +14,9 @@ self-describing:
                             index of its container argument
   action <verb> <id>...     JSON {"code", "text"}; verb is start/stop/restart
   memory <name> <mb>        JSON {"code", "text"} for docker update --memory
+  projects <dir>...         JSON {"code", "text", "projects"}: Compose projects
+                            found under the folders plus those Docker knows
+  up <compose-file>...      JSON {"code", "text"} for docker compose up -d
 """
 import json
 import os
@@ -32,6 +35,15 @@ MIB = 1024 * KIB
 SNAPSHOT_DEADLINE = 12.0
 LOGS_DEADLINE = 10.0
 ACTION_DEADLINE = 45.0
+PROJECTS_DEADLINE = 8.0
+UP_DEADLINE = 600.0         # first start may pull or build images
+
+COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
+SCAN_DEPTH = 4
+SCAN_MAX_DIRS = 20000
+SCAN_MAX_PROJECTS = 100
+COMPOSE_READ_LIMIT = 256 * KIB
+SKIP_DIRS = {"node_modules", "vendor", "venv", "target", "dist", "build", "__pycache__"}
 
 INSPECT_LIMIT = 4 * MIB     # all container metadata together
 STATS_LIMIT = 256 * KIB
@@ -329,6 +341,135 @@ def group_logs(ids):
                                  "lines": [[e[1], e[2], e[3]] for e in entries]}) + "\n")
 
 
+def compose_project_name(path, text):
+    """Mirrors Compose's naming: top-level `name:`, else the folder name."""
+    match = re.search(r"^name:\s*[\"']?([A-Za-z0-9][A-Za-z0-9_.-]*)[\"']?\s*$", text, re.M)
+    if match and "${" not in match.group(0):
+        return match.group(1).lower()
+    base = re.sub(r"[^a-z0-9_-]", "", os.path.basename(os.path.dirname(path)).lower())
+    return base.lstrip("_-") or "default"
+
+
+def compose_services(text):
+    """Top-level service keys, read by indentation; good enough for a summary."""
+    services, indent, inside = [], None, False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            inside = line.rstrip().rstrip(":") == "services" or line.startswith("services:")
+            indent = None
+            continue
+        if not inside:
+            continue
+        width = len(line) - len(line.lstrip())
+        if indent is None:
+            indent = width
+        match = re.match(r"^\s*[\"']?([A-Za-z0-9][A-Za-z0-9_.-]*)[\"']?\s*:", line)
+        if width == indent and match:
+            services.append(match.group(1))
+    return services[:50]
+
+
+def read_compose(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(COMPOSE_READ_LIMIT).decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def scan_compose_files(roots, deadline):
+    found, visited, truncated = [], 0, False
+    for root in roots:
+        root = os.path.realpath(os.path.expanduser(root))
+        if not os.path.isdir(root):
+            continue
+        stack = [(root, 0)]
+        while stack:
+            if deadline.remaining() <= 0 or visited >= SCAN_MAX_DIRS or len(found) >= SCAN_MAX_PROJECTS:
+                truncated = True
+                break
+            folder, depth = stack.pop()
+            visited += 1
+            try:
+                entries = list(os.scandir(folder))
+            except OSError:
+                continue
+            names = {e.name for e in entries if e.is_file(follow_symlinks=False)}
+            compose = next((n for n in COMPOSE_FILES if n in names), None)
+            if compose:
+                found.append(os.path.join(folder, compose))
+            if depth >= SCAN_DEPTH:
+                continue
+            for entry in entries:
+                if (entry.is_dir(follow_symlinks=False) and not entry.name.startswith(".")
+                        and entry.name not in SKIP_DIRS):
+                    stack.append((entry.path, depth + 1))
+    return found, truncated
+
+
+def projects(roots):
+    deadline = Deadline(PROJECTS_DEADLINE)
+    notes = []
+    by_name = {}
+
+    # Projects Docker has containers for, running or stopped.
+    listed = run(["docker", "compose", "ls", "--all", "--format", "json"],
+                 deadline, (SMALL_LIMIT * 4, SMALL_LIMIT))
+    try:
+        known = json.loads(listed.stdout.decode("utf-8", "replace") or "[]") if listed.ok else []
+    except ValueError:
+        known = []
+    for item in known if isinstance(known, list) else []:
+        name = str(item.get("Name") or "")
+        files = [f for f in str(item.get("ConfigFiles") or "").split(",") if f]
+        if not NAME_RE.match(name) or not files:
+            continue
+        by_name[name] = {"name": name, "files": files, "dir": os.path.dirname(files[0]),
+                         "status": str(item.get("Status") or "")[:80], "services": []}
+
+    files, truncated = scan_compose_files(roots, deadline)
+    if truncated:
+        notes.append("Project search stopped early; narrow projectDirs to find everything.")
+    for path in files:
+        text = read_compose(path)
+        name = compose_project_name(path, text)
+        project = by_name.get(name)
+        if project is None:
+            by_name[name] = {"name": name, "files": [path], "dir": os.path.dirname(path),
+                             "status": "", "services": compose_services(text)}
+        elif os.path.realpath(path) in [os.path.realpath(f) for f in project["files"]]:
+            project["services"] = compose_services(text)
+
+    for project in by_name.values():
+        if not project["services"]:
+            project["services"] = compose_services(read_compose(project["files"][0]))
+        project["available"] = all(os.path.isfile(f) for f in project["files"])
+    result = sorted(by_name.values(), key=lambda p: p["name"])
+    sys.stdout.write(json.dumps({"code": 0, "text": "\n".join(notes), "projects": result}) + "\n")
+
+
+def compose_up(files):
+    if not files or len(files) > 8:
+        return emit(2, "Invalid compose files.")
+    for path in files:
+        if (not os.path.isabs(path) or os.path.basename(path) not in COMPOSE_FILES
+                or not os.path.isfile(path)):
+            return emit(2, "Not a Compose file: " + path[:300])
+    argv = ["docker", "compose"]
+    for path in files:
+        argv += ["-f", path]
+    argv += ["--project-directory", os.path.dirname(files[0]), "up", "-d"]
+    result = run(argv, Deadline(UP_DEADLINE), (SMALL_LIMIT, SMALL_LIMIT), tail=True)
+    if result.ok:
+        return emit(0, "")
+    message = ANSI_RE.sub("", (result.stderr or result.stdout).decode("utf-8", "replace")).strip()
+    if result.timed_out:
+        message = "docker compose up did not finish within %d minutes." % (UP_DEADLINE // 60)
+    emit(result.code or 1, message[-2000:] or "docker compose up failed.")
+
+
 def command(argv, deadline_seconds):
     result = run(argv, Deadline(deadline_seconds), (SMALL_LIMIT, SMALL_LIMIT))
     if result.ok:
@@ -367,8 +508,12 @@ def main(argv):
         action(argv[1], argv[2:])
     elif argv[:1] == ["memory"] and len(argv) == 3:
         memory(argv[1], argv[2])
+    elif argv[:1] == ["projects"]:
+        projects(argv[1:])
+    elif argv[:1] == ["up"] and len(argv) >= 2:
+        compose_up(argv[1:])
     else:
-        emit(2, "Usage: docker-helper.py snapshot | logs <id> | grouplogs <id>... | action <verb> <id>... | memory <name> <mb>")
+        emit(2, "Usage: docker-helper.py snapshot | logs <id> | grouplogs <id>... | action <verb> <id>... | memory <name> <mb> | projects <dir>... | up <compose-file>...")
 
 
 if __name__ == "__main__":

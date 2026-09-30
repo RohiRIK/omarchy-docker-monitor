@@ -23,6 +23,11 @@ case "$FAKE_MODE:$1" in
   hang:logs) echo '2026-01-01T00:00:00Z started'; sleep 60 ;;
   *:logs) echo '2026-01-01T00:00:02Z out'; echo '2026-01-01T00:00:01Z err' >&2 ;;
   *:stop) echo stopped ;;
+  *:compose)
+    case " $* " in
+      *" ls "*) echo '[{"Name":"known","Status":"exited(2)","ConfigFiles":"'"$FAKE_KNOWN"'"}]' ;;
+      *" up "*) echo "up $*" >"$FAKE_UP_LOG" ;;
+    esac ;;
   *) exit 1 ;;
 esac
 FAKE
@@ -62,6 +67,23 @@ check '[[ $(node -e "const d=JSON.parse(process.argv[1]); console.log(d.lines.le
 
 out=$(helper normal grouplogs 'bad id')
 check '[[ $out == *"Invalid container ids"* ]]' "group logs reject invalid ids"
+
+PROJ=$(mktemp -d)
+mkdir -p "$PROJ/known" "$PROJ/apps/My App" "$PROJ/apps/.hidden/x" "$PROJ/apps/named" "$PROJ/apps/node_modules/dep"
+printf 'services:\n  web:\n    image: x\n' >"$PROJ/known/compose.yaml"
+printf 'services:\n  api:\n    image: a\n    environment:\n      A: b\n  worker:\n    image: w\nvolumes:\n  data:\n' >"$PROJ/apps/My App/docker-compose.yml"
+printf 'name: custom-name\nservices:\n  db:\n    image: d\n' >"$PROJ/apps/named/compose.yml"
+touch "$PROJ/apps/.hidden/x/compose.yaml" "$PROJ/apps/node_modules/dep/compose.yaml"
+out=$(FAKE_KNOWN="$PROJ/known/compose.yaml" helper normal projects "$PROJ/apps")
+check '[[ $(node -e "const d=JSON.parse(process.argv[1]); console.log(d.projects.map(p => p.name + \":\" + p.services.join(\"+\")).join(\",\"))" "$out") == "custom-name:db,known:web,myapp:api+worker" ]]' \
+  "projects merge Docker-known and scanned Compose files, skipping hidden and dependency folders"
+
+FAKE_UP_LOG="$PROJ/up.log" helper normal up "$PROJ/known/compose.yaml" >/dev/null
+check '[[ $(cat "$PROJ/up.log") == "up compose -f $PROJ/known/compose.yaml --project-directory $PROJ/known up -d" ]]' \
+  "up runs docker compose up -d for the file"
+out=$(helper normal up /etc/passwd)
+check '[[ $out == *"Not a Compose file"* ]]' "up rejects files that are not Compose files"
+rm -rf "$PROJ"
 
 start=$SECONDS
 out=$(helper hugeline logs aaaaaaaaaaaa)
