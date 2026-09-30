@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Published ports: the container Overview lists every host-published port and what answers on it (web page, API, other HTTP, not HTTP), each HTTP port clickable. Web pages become the group and container Open buttons, labelled by service, so links work on any port instead of a fixed list. Uses the new `docker-helper.py probe` command (1 s per port, 4 KiB read, re-checked after a minute).
+
+## Unreleased
+
 - Available projects: the home page lists Compose projects that are not running, found under `projectDirs` (default `~`) or known to Docker, with a Start button that runs `docker compose up -d`. Uses the new `docker-helper.py projects` and `up` commands, with a bounded folder search and a 10-minute start deadline.
 
 ## 0.3.0

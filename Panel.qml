@@ -100,6 +100,57 @@ Panel {
     onTriggered: if (!hostStatsProc.running) hostStatsProc.running = true
   }
 
+  // What answers on each published port: target -> {kind, status, type, at}.
+  // Probed in the background; results older than a minute are re-checked so
+  // a service that was still booting gets its link once it is up.
+  property var probes: ({})
+  readonly property int probeMaxAgeMs: 60000
+
+  function scheduleProbes() {
+    if (probeProc.running) return
+    var now = Date.now(), targets = []
+    containers.forEach(function(c) {
+      if (c.status !== "running") return
+      ;(c.publishedPorts || []).forEach(function(p) {
+        var known = probes[p.target]
+        if ((!known || now - known.at > probeMaxAgeMs) && targets.indexOf(p.target) < 0) targets.push(p.target)
+      })
+    })
+    if (!targets.length) return
+    probeProc.command = root.helperCommand(8, ["probe"].concat(targets.slice(0, 64)))
+    probeProc.running = true
+  }
+
+  Process {
+    id: probeProc
+    stdout: StdioCollector { id: probeOut; waitForEnd: true }
+    onExited: function(code, status) {
+      var data = null
+      try { data = JSON.parse(probeOut.text) } catch (e) {}
+      if (!data || !Array.isArray(data.probes)) return
+      var next = {}, now = Date.now()
+      for (var key in root.probes) next[key] = root.probes[key]
+      data.probes.forEach(function(p) {
+        if (p && typeof p.target === "string")
+          next[p.target] = { kind: String(p.kind || ""), status: Number(p.status) || 0, type: String(p.type || ""), at: now }
+      })
+      root.probes = next
+      root.containers = Model.applyProbes(root.containers, next)
+    }
+  }
+
+  // Button text for a service link: the service name on a group page,
+  // host:port when a container has several links.
+  function linkLabel(row, url) {
+    if (row.isGroup) {
+      var owner = (row.containers || []).find(function(c) { return Model.containerUrls(c, preferences).indexOf(url) >= 0 })
+      var port = /:(\d+)\/?$/.exec(url)
+      return "Open " + (owner ? (owner.service || owner.name) : url.replace(/^https?:\/\//, "")) +
+          (owner && port && row.urls.length > 1 ? " :" + port[1] : "") + " ↗"
+    }
+    return urlsFor(row).length === 1 ? "Open service ↗" : "Open " + url.replace(/^https?:\/\//, "") + " ↗"
+  }
+
   function urlsFor(row) {
     return row.isGroup ? row.urls : Model.containerUrls(row, preferences)
   }
@@ -601,7 +652,8 @@ Panel {
         root.dockerVersion = snap.dockerVersion
         root.hostMemBytes = snap.hostMemBytes
         root.history = Model.addHistory(root.history, snap.containers, root.preferences, Date.now())
-        root.containers = snap.containers
+        root.containers = Model.applyProbes(snap.containers, root.probes)
+        root.scheduleProbes()
         if (snap.error) { root.notice = snap.error; root.noticeError = true }
         root.pruneOverrides(snap.containers.map(function(c) { return c.name }))
       }
@@ -1158,7 +1210,7 @@ Panel {
                     model: root.urlsFor(containerRow.container)
                     delegate: MonitorButton {
                       required property string modelData
-                      text: root.urlsFor(containerRow.container).length === 1 ? "Open service ↗" : "Open " + modelData.replace(/^https?:\/\//, "")
+                      text: root.linkLabel(containerRow.container, modelData)
                       tooltipText: modelData
                       onClicked: Qt.openUrlExternally(modelData)
                     }
@@ -1212,6 +1264,60 @@ Panel {
                     textFormat: Text.PlainText
                     visible: (containerRow.container.internalAddresses || []).length === 0
                     text: "No container IP assigned"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                Column {
+                  visible: root.containerPage && root.containerTab === "overview"
+                  width: parent.width
+                  spacing: Style.space(6)
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "Published ports"
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Repeater {
+                    model: containerRow.container.publishedPorts || []
+                    delegate: Item {
+                      required property var modelData
+                      width: parent.width
+                      implicitHeight: portText.implicitHeight
+                      Text {
+                        id: portText
+                        width: parent.width
+                        text: modelData.target + " → " + modelData.port + " · " + (modelData.description || "checking…") +
+                              (modelData.url ? "  ↗" : "")
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: modelData.web ? Color.accent : (modelData.url ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4))
+                        font.family: root.bar.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.underline: portMouse.containsMouse && !!modelData.url
+                      }
+                      MouseArea {
+                        id: portMouse
+                        anchors.fill: parent
+                        enabled: !!modelData.url
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Qt.openUrlExternally(modelData.url)
+                      }
+                      PanelToolTip {
+                        visible: portMouse.containsMouse && !!modelData.url
+                        text: "Open " + modelData.url
+                        fontFamily: root.bar.fontFamily
+                      }
+                    }
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    visible: (containerRow.container.publishedPorts || []).length === 0
+                    text: "No ports published to the host"
                     color: Qt.darker(root.bar.foreground, 1.4)
                     font.family: root.bar.fontFamily
                     font.pixelSize: Style.font.caption

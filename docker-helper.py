@@ -17,6 +17,8 @@ self-describing:
   projects <dir>...         JSON {"code", "text", "projects"}: Compose projects
                             found under the folders plus those Docker knows
   up <compose-file>...      JSON {"code", "text"} for docker compose up -d
+  probe <ip:port>...        JSON {"code", "probes"}: what answers on published
+                            ports (http/https status and content type, or tcp)
 """
 import json
 import os
@@ -25,6 +27,8 @@ from datetime import datetime
 import re
 import selectors
 import signal
+import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -37,6 +41,11 @@ LOGS_DEADLINE = 10.0
 ACTION_DEADLINE = 45.0
 PROJECTS_DEADLINE = 8.0
 UP_DEADLINE = 600.0         # first start may pull or build images
+
+PROBE_DEADLINE = 4.0
+PROBE_TIMEOUT = 1.0
+PROBE_MAX = 64
+PROBE_READ = 4 * KIB
 
 COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
 SCAN_DEPTH = 4
@@ -450,6 +459,78 @@ def projects(roots):
     sys.stdout.write(json.dumps({"code": 0, "text": "\n".join(notes), "projects": result}) + "\n")
 
 
+def http_reply(sock, host, port):
+    """Sends GET / and returns (status, content type) if the reply is HTTP."""
+    request = "GET / HTTP/1.0\r\nHost: %s:%d\r\nUser-Agent: omarchy-docker-monitor\r\n\r\n" % (
+        "[%s]" % host if ":" in host else host, port)
+    sock.sendall(request.encode())
+    data = b""
+    while len(data) < PROBE_READ and b"\r\n\r\n" not in data:
+        chunk = sock.recv(PROBE_READ - len(data))
+        if not chunk:
+            break
+        data += chunk
+    head = data.decode("latin-1", "replace")
+    match = re.match(r"^HTTP/\d(?:\.\d)? (\d{3})", head)
+    if not match:
+        return None
+    ctype = re.search(r"^content-type:\s*([^;\r\n]*)", head, re.I | re.M)
+    return int(match.group(1)), (ctype.group(1).strip().lower()[:80] if ctype else "")
+
+
+def probe_one(target):
+    host, port = target.rsplit(":", 1)
+    host, port = host.strip("[]"), int(port)
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    result = {"target": target, "kind": "closed", "status": 0, "type": ""}
+    # Plain HTTP first; services that greet first (SMTP, databases) answer
+    # with something else and are reported as plain TCP.
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(PROBE_TIMEOUT)
+            sock.connect((host, port))
+            result["kind"] = "tcp"
+            reply = http_reply(sock, host, port)
+            if reply:
+                result.update(kind="http", status=reply[0], type=reply[1])
+                return result
+    except (OSError, ValueError):
+        if result["kind"] == "closed":
+            return result
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, port), timeout=PROBE_TIMEOUT) as raw:
+            with context.wrap_socket(raw, server_hostname=None) as sock:
+                reply = http_reply(sock, host, port)
+                if reply:
+                    result.update(kind="https", status=reply[0], type=reply[1])
+    except (OSError, ValueError, ssl.SSLError):
+        pass
+    return result
+
+
+def probe(targets):
+    valid = []
+    for target in targets[:PROBE_MAX]:
+        match = re.match(r"^(\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):(\d{1,5})$", target)
+        if match and 0 < int(match.group(2)) < 65536:
+            valid.append(target)
+    if not valid:
+        return emit(2, "Invalid probe targets.")
+    with ThreadPoolExecutor(max_workers=min(16, len(valid))) as pool:
+        futures = [pool.submit(probe_one, t) for t in valid]
+        results = []
+        end = time.monotonic() + PROBE_DEADLINE
+        for future, target in zip(futures, valid):
+            try:
+                results.append(future.result(timeout=max(0.0, end - time.monotonic())))
+            except Exception:
+                results.append({"target": target, "kind": "closed", "status": 0, "type": ""})
+    sys.stdout.write(json.dumps({"code": 0, "probes": results}) + "\n")
+
+
 def compose_up(files):
     if not files or len(files) > 8:
         return emit(2, "Invalid compose files.")
@@ -510,10 +591,12 @@ def main(argv):
         memory(argv[1], argv[2])
     elif argv[:1] == ["projects"]:
         projects(argv[1:])
+    elif argv[:1] == ["probe"] and len(argv) >= 2:
+        probe(argv[1:])
     elif argv[:1] == ["up"] and len(argv) >= 2:
         compose_up(argv[1:])
     else:
-        emit(2, "Usage: docker-helper.py snapshot | logs <id> | grouplogs <id>... | action <verb> <id>... | memory <name> <mb> | projects <dir>... | up <compose-file>...")
+        emit(2, "Usage: docker-helper.py snapshot | logs <id> | grouplogs <id>... | action <verb> <id>... | memory <name> <mb> | projects <dir>... | up <compose-file>... | probe <ip:port>...")
 
 
 if __name__ == "__main__":

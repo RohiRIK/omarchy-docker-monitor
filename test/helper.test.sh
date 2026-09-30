@@ -85,6 +85,31 @@ out=$(helper normal up /etc/passwd)
 check '[[ $out == *"Not a Compose file"* ]]' "up rejects files that are not Compose files"
 rm -rf "$PROJ"
 
+# Probe: a real HTTP server, a service that greets first (like SMTP), a closed port.
+PROBE_OUT=$(python3 - "$ROOT/docker-helper.py" <<'PY'
+import http.server, json, socket, subprocess, sys, threading
+class Page(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+        self.wfile.write(b"<h1>hi</h1>")
+    def log_message(self, *a): pass
+web = http.server.HTTPServer(("127.0.0.1", 0), Page)
+threading.Thread(target=web.serve_forever, daemon=True).start()
+greeter = socket.socket(); greeter.bind(("127.0.0.1", 0)); greeter.listen()
+def greet():
+    while True:
+        conn, _ = greeter.accept(); conn.sendall(b"220 mail ready\r\n")
+threading.Thread(target=greet, daemon=True).start()
+closed = socket.socket(); closed.bind(("127.0.0.1", 0)); closed_port = closed.getsockname()[1]; closed.close()
+targets = ["127.0.0.1:%d" % p for p in (web.server_port, greeter.getsockname()[1], closed_port)]
+out = subprocess.run([sys.executable, sys.argv[1], "probe"] + targets + ["bad"], capture_output=True, text=True).stdout
+print(" ".join("%s/%s/%s" % (p["kind"], p["status"], p["type"]) for p in json.loads(out)["probes"]))
+PY
+)
+check '[[ $PROBE_OUT == "http/200/text/html tcp/0/ closed/0/" ]]' "probe tells a web page from a non-HTTP service and a closed port ($PROBE_OUT)"
+out=$(helper normal probe 'example.com:80' '127.0.0.1:99999')
+check '[[ $out == *"Invalid probe targets"* ]]' "probe only accepts IP:port targets"
+
 start=$SECONDS
 out=$(helper hugeline logs aaaaaaaaaaaa)
 check '(( SECONDS - start <= 12 ))' "an oversized log line stops at the read limit"

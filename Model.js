@@ -132,6 +132,9 @@ function parseSnapshot(text) {
       c.project = labels["com.docker.compose.project"] || ""
       c.service = labels["com.docker.compose.service"] || ""
       c.urls = serviceUrls(labels, c.ports || {})
+      c.labelUrls = serviceUrls(labels, {})
+      c.guessedUrls = c.urls
+      c.publishedPorts = publishedPorts(c.ports || {})
       c.internalAddresses = []
       Object.keys(c.networks || {}).sort().forEach(function(name) {
         var network = c.networks[name] || {}
@@ -191,6 +194,68 @@ function serviceUrls(labels, ports) {
     })
   }
   return urls
+}
+
+// Host-published TCP ports as probe targets. Wildcard bindings are reached
+// through loopback; IPv4 and IPv6 bindings of the same host port collapse.
+function publishedPorts(ports) {
+  var list = [], seen = {}
+  Object.keys(ports || {}).sort(function(a, b) { return parseInt(a) - parseInt(b) }).forEach(function(port) {
+    if (!/^\d+\/tcp$/.test(port)) return
+    ;(ports[port] || []).forEach(function(binding) {
+      var hostPort = String((binding || {}).HostPort || "")
+      if (!/^\d{1,5}$/.test(hostPort) || seen[hostPort]) return
+      var ip = String(binding.HostIp || "")
+      if (!ip || ip === "0.0.0.0" || ip === "::") ip = "127.0.0.1"
+      if (!/^[\d.]+$/.test(ip) && !/^[0-9a-fA-F:]+$/.test(ip)) return
+      seen[hostPort] = true
+      var host = ip.indexOf(":") >= 0 ? "[" + ip + "]" : ip
+      list.push({ port: port, hostPort: hostPort, target: host + ":" + hostPort,
+                  browserHost: ip === "127.0.0.1" ? "localhost" : host })
+    })
+  })
+  return list
+}
+
+function portIsWeb(p) {
+  return (p.kind === "http" || p.kind === "https") && p.type === "text/html" && p.status > 0 && p.status < 400
+}
+
+function portDescription(p) {
+  if (!p.kind) return "checking…"
+  if (p.kind === "closed") return "not answering"
+  if (p.kind === "tcp") return "not HTTP"
+  var secure = p.kind === "https" ? "HTTPS" : "HTTP"
+  if (portIsWeb(p)) return "web page" + (p.kind === "https" ? " · HTTPS" : "")
+  if (/json/.test(p.type)) return "API · JSON"
+  if (/xml/.test(p.type)) return "API · XML"
+  return secure + (p.type ? " · " + p.type.replace(/^text\//, "") : "") + " · " + p.status
+}
+
+// Adds probe results to each container's published ports. Links come from
+// labels first, then from ports that serve a web page; the fixed-port guess
+// is used only until every port has been probed.
+function applyProbes(containers, probes) {
+  probes = probes || {}
+  return (containers || []).map(function(c) {
+    var next = Object.assign({}, c)
+    var probedAll = true
+    next.publishedPorts = (c.publishedPorts || []).map(function(p) {
+      var result = probes[p.target] || {}
+      var port = Object.assign({}, p, { kind: result.kind || "", status: result.status || 0, type: result.type || "" })
+      if (!port.kind) probedAll = false
+      port.url = port.kind === "http" || port.kind === "https" ?
+          port.kind + "://" + port.browserHost + ":" + port.hostPort : ""
+      port.web = portIsWeb(port)
+      port.description = portDescription(port)
+      return port
+    })
+    var webUrls = next.publishedPorts.filter(function(p) { return p.web }).map(function(p) { return p.url })
+    if ((c.labelUrls || []).length) next.urls = c.labelUrls
+    else if (webUrls.length || (probedAll && next.publishedPorts.length)) next.urls = webUrls
+    else next.urls = c.guessedUrls || c.urls || []
+    return next
+  })
 }
 
 function healthText(c) {
@@ -361,6 +426,9 @@ if (typeof module !== "undefined") {
   module.exports = {
     safeUrl: safeUrl,
     serviceUrls: serviceUrls,
+    publishedPorts: publishedPorts,
+    portDescription: portDescription,
+    applyProbes: applyProbes,
     containerUrls: containerUrls,
     healthText: healthText,
     needsAttention: needsAttention,
