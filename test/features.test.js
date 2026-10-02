@@ -67,3 +67,25 @@ const [idle, gone] = M.availableProjects(projects, [web])
 assert.equal(M.projectSummary(idle, "/home/u"), "1 service · stopped · ~/idle")
 assert.equal(M.projectSummary(gone, "/home/u"), "file missing · /x")
 
+const ports = M.publishedPorts({
+  "8025/tcp": [{ HostIp: "127.0.0.1", HostPort: "8025" }],
+  "1025/tcp": [{ HostIp: "0.0.0.0", HostPort: "1025" }, { HostIp: "::", HostPort: "1025" }],
+  "5000/tcp": [{ HostIp: "::1", HostPort: "5000" }],
+  "1110/tcp": null, "53/udp": [{ HostIp: "", HostPort: "53" }]
+})
+assert.deepEqual(ports.map(p => p.target), ["127.0.0.1:1025", "[::1]:5000", "127.0.0.1:8025"])
+const box = { name: "mail", publishedPorts: ports, labelUrls: [], guessedUrls: ["http://localhost:8080"] }
+assert.deepEqual(M.applyProbes([box], {})[0].urls, ["http://localhost:8080"])
+const probed = M.applyProbes([box], {
+  "127.0.0.1:8025": { kind: "http", status: 200, type: "text/html" },
+  "127.0.0.1:1025": { kind: "tcp" },
+  "[::1]:5000": { kind: "http", status: 401, type: "application/json" }
+})[0]
+assert.deepEqual(probed.urls, ["http://localhost:8025"])
+assert.deepEqual(probed.publishedPorts.map(p => p.description), ["not HTTP", "API · JSON", "web page"])
+assert.deepEqual(probed.publishedPorts.map(p => p.url), ["", "http://[::1]:5000", "http://localhost:8025"])
+const noWeb = M.applyProbes([box], { "127.0.0.1:8025": { kind: "tcp" }, "127.0.0.1:1025": { kind: "tcp" }, "[::1]:5000": { kind: "closed" } })[0]
+assert.deepEqual(noWeb.urls, [])
+assert.deepEqual(M.applyProbes([{ ...box, labelUrls: ["https://mail.example.com"] }], {})[0].urls, ["https://mail.example.com"])
+assert.equal(M.portDescription({ kind: "https", status: 302, type: "text/html" }), "web page · HTTPS")
+

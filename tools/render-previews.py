@@ -59,6 +59,16 @@ s = s.replace('path: Quickshell.env("HOME") + "/.config/omarchy/rohirik-docker-m
 s = s.replace('ipcTarget: "rohirik.docker-monitor"', 'ipcTarget: ""')
 p.write_text(s)
 
+def demo_port(host_port, port, kind, description, web=False):
+    url = "http://localhost:%d" % host_port if kind == "http" else ""
+    return dict(port="%d/tcp" % port, hostPort=str(host_port), target="127.0.0.1:%d" % host_port,
+                browserHost="localhost", kind=kind, status=200 if kind == "http" else 0,
+                type="text/html" if web else "", url=url, web=web, description=description)
+demo_ports = {
+    ("infisical", "app"): [demo_port(8080, 8080, "http", "web page", True),
+                           demo_port(8081, 9090, "http", "API · JSON")],
+    ("infisical", "postgres"): [demo_port(5432, 5432, "tcp", "not HTTP")],
+}
 containers = []
 for project, service, image, cpu, mem, ip in [
  ("beszel", "hub", "henrygd/beszel:latest", "0.4%", 48, "172.18.0.2"),
@@ -72,7 +82,8 @@ for project, service, image, cpu, mem, ip in [
         project=project, service=service, image=image, status="running", health="healthy",
         restarts=0, memLimitBytes=1073741824, cpuPercent=cpu, memUsageBytes=mem*1048576,
         urls=[f"https://{project}.example.com"] if service in ["hub", "app", "proxy"] else [],
-        internalAddresses=[dict(network=f"{project}_default", address=ip)]))
+        internalAddresses=[dict(network=f"{project}_default", address=ip)],
+        publishedPorts=demo_ports.get((project, service), [])))
 demo = json.dumps(containers)
 demo_projects = [
     dict(name="infisical", files=["/home/demo/infra/infisical/compose.yaml"], dir="/home/demo/infra/infisical",

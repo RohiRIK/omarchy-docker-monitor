@@ -11,6 +11,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Group overview with resource history, service links, and compact container rows.
 - Separate container Overview and Settings pages.
 - Internal IPv4/IPv6 addresses labeled by Docker network.
+- Published ports: every port a container publishes on the host, probed to show whether it serves a web page, an API or something else; web pages become Open buttons.
 - Available projects: Compose projects found in your folders, or known to Docker, that are not running, each with a Start button.
 - Group logs: every container in a group merged by time, color-coded per container with the theme palette, with per-container filtering and a live follow mode.
 - Ask agent: open your default Omarchy agent with a question about what a group or container is for. Details go only to the agent you chose; the prompt tells it to use read-only Docker commands.
@@ -59,7 +60,7 @@ Click the Docker icon → select a group → select a container.
 - **Groups:** only groups with a running, restarting, or paused container appear. A stopped group stays on its open detail page, so it can be started again before navigating away.
 - **Available:** below the active groups, every Compose project that is not running, with its service count and folder. **Start** runs `docker compose up -d` for its Compose file(s); the first start may take a while if images must be pulled or built. Projects come from `docker compose ls --all` and from Compose files found under `projectDirs`.
 - **Group overview:** graphs, service links, and member containers. **Group logs** merges the newest lines of every member (400 lines in total) into one timeline. Click a container's name to hide or show it; hidden containers are not fetched, so the line budget goes to the rest. **Live** refreshes every refresh interval (minimum 2 s) and follows new lines while you are scrolled to the bottom. The `⋯` menu contains lifecycle actions and rename.
-- **Container Overview:** resource history, network addresses, service access, and recent logs.
+- **Container Overview:** resource history, network addresses, published ports, service access, and recent logs. Each published port shows what answers on it: *web page* (HTML), *API · JSON/XML*, other HTTP, *not HTTP* (e.g. SMTP or a database) or *not answering*. Click an HTTP port to open it in your browser.
 - **Container Settings:** group assignment, URL override, and RAM limit.
 - **Back:** returns one page. Escape first closes an editor or log view, then goes back.
 - **Keyboard:** j/k or arrows select rows; Enter opens a row; r refreshes. h/l adjust RAM only on a container's Settings page.
@@ -69,6 +70,8 @@ Container CPU follows Docker's convention and can exceed 100% on multi-core work
 Memory changes apply through `docker update --memory … --memory-swap -1`. The slider applies on release; keyboard adjustments are debounced. Docker Compose may replace those limits when a container is recreated—keep durable limits in your Compose configuration.
 
 Docker is read and controlled only through `docker-helper.py`, which gives each request an overall deadline (12 s for snapshots, 10 s for logs, 45 s for actions) and per-stream byte limits (4 MiB of container metadata, 8 MiB read per log stream). Commands that exceed a limit are stopped and the panel shows a notice. Logs show at most the newest 200 lines and 60,000 characters, with each line capped at 2,000 characters. Container-provided text is always rendered as plain text.
+
+Service links come from, in order: your URL override, `omarchy.docker.url` or Traefik `Host()` labels, then published ports that serve a web page. To tell web pages apart from other services, the panel sends one `GET /` (plain, then TLS) to each port published by a running container, only while the panel is open, and re-checks each port after a minute. It reads at most 4 KiB of the reply and gives up after 1 s per port. Services that do not speak HTTP may log the request as an unrecognised command.
 
 Service icons are symbolic, selected from known service/image patterns, with a Docker fallback. They are not official service logos.
 
