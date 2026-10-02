@@ -209,8 +209,12 @@ Panel {
   }
 
   // Opens the user's default agent (omarchy agent prompt) in its own terminal.
+  // Stock omarchy-agent-prompt has no read-only / plan-mode flag (only --inline
+  // and the prompt); it always launches the default agent with that agent's
+  // unattended auto-approve spelling. Do not invent per-agent permission argv
+  // here — when Omarchy gains a read-only launch API, switch this call site.
   function askAgent(row) {
-    var prompt = Model.agentPrompt(row, root.urlsFor(row))
+    var prompt = Model.agentPrompt(row)
     if (!prompt) return
     Quickshell.execDetached(["omarchy-agent-prompt", prompt])
     root.close()

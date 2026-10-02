@@ -14,7 +14,7 @@ A compact Docker dashboard for the Omarchy Quattro bar. Start with host CPU/RAM 
 - Published ports: every port a container publishes on the host, probed to show whether it serves a web page, an API or something else; web pages become Open buttons.
 - Available projects: Compose projects found in your folders, or known to Docker, that are not running, each with a Start button.
 - Group logs: every container in a group merged by time, color-coded per container with the theme palette, with per-container filtering and a live follow mode.
-- Ask agent: open your default Omarchy agent with a question about what a group or container is for. Details go only to the agent you chose; the prompt tells it to use read-only Docker commands.
+- Ask agent: open your default Omarchy agent with a question about what a group or container is for. The prompt carries only local identifiers (name, image, status, id)—not Compose labels or label-derived URLs—and tells the agent to use read-only Docker commands.
 - Start, stop, and restart from the ⋯ menu, or with the Running switch on a container's Settings page.
 - Recent logs, custom group names, and URL overrides.
 - RAM limits in Settings; the rest of the interface stays focused on monitoring.

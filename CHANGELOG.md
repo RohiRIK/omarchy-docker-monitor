@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Security: Ask agent no longer puts Compose service/project labels or label-derived URLs into the instruction prompt (marketplace hold omacom/omarchy-plugin-marketplace#9659 / HANCORE). The prompt keeps container name, image, status, and validated ids; the agent can read the rest via `docker inspect`.
+
+## Unreleased
+
 - Published ports: the container Overview lists every host-published port and what answers on it (web page, API, other HTTP, not HTTP), each HTTP port clickable. Web pages become the group and container Open buttons, labelled by service, so links work on any port instead of a fixed list. Uses the new `docker-helper.py probe` command (1 s per port, 4 KiB read, re-checked after a minute).
 
 ## Unreleased
